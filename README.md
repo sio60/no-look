@@ -51,7 +51,7 @@ MediaPipe Face Mesh를 통해 얼굴의 468개 랜드마크를 추출하고, 눈
 
 ---
 
-## 🛠 Tech Stack
+## Tech Stack
 - **Frontend:** React, Next.js, Tailwind CSS
 - **AI/ML:** @mediapipe/face_mesh, @mediapipe/hands, TensorFlow.js
 - **Backend/Logic:** Python (Flask), OpenCV, PyAutoGUI
