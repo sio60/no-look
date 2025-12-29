@@ -14,7 +14,6 @@
 ### 1팀: AI & Trigger (AI Part)
 **멤버: 임은상, 변지환, 박성빈**
 - **Head Pose & Eye Tracking:** MediaPipe를 이용한 고개 각도 및 시선 이탈 실시간 추적.
-- **Object Detection:** 손 영역 주변의 스마트폰 객체 탐지 시 즉시 트리거 신호 송출.
 - **Optimization:** 브라우저 연산 부하 방지를 위한 Web Worker 기반 추론 최적화.
 
 ### 2팀: Video Engine (Back-end Part)
