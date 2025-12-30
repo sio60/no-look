@@ -1,7 +1,10 @@
 package com.nolook.backend;
 
 import com.nolook.backend.matcher.LightingMatcher;
+
 import com.nolook.backend.switcher.SeamlessSwitcher;
+import com.nolook.backend.web.StreamingController;
+import org.bytedeco.javacpp.BytePointer;
 import org.bytedeco.javacpp.Loader;
 import org.bytedeco.opencv.opencv_core.Mat;
 import org.bytedeco.opencv.opencv_videoio.VideoCapture;
@@ -11,8 +14,10 @@ import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
 
+import static org.bytedeco.opencv.global.opencv_imgcodecs.imencode;
 import static org.bytedeco.opencv.global.opencv_imgproc.resize;
 import static org.bytedeco.opencv.global.opencv_videoio.CAP_PROP_POS_FRAMES;
+import static org.bytedeco.opencv.global.opencv_videoio.CAP_DSHOW;
 
 /**
  * 비디오 처리 엔진 - 실제 카메라와 가짜 영상을 블렌딩합니다.
@@ -27,6 +32,7 @@ public class VideoEngine {
 
     private final LightingMatcher matcher;
     private final SeamlessSwitcher switcher;
+    private final StreamingController streamingController;
 
     private VideoCapture realCam;
     private VideoCapture fakeVideo;
@@ -36,18 +42,19 @@ public class VideoEngine {
     private final Mat fakeFrame = new Mat();
     private final Mat outputFrame = new Mat();
 
-    public VideoEngine(LightingMatcher matcher, SeamlessSwitcher switcher) {
+    public VideoEngine(LightingMatcher matcher, SeamlessSwitcher switcher, StreamingController streamingController) {
         this.matcher = matcher;
         this.switcher = switcher;
+        this.streamingController = streamingController;
     }
 
     @PostConstruct
     public void init() {
         Loader.load(org.bytedeco.opencv.global.opencv_core.class);
 
-        realCam = new VideoCapture(0);
-        // 가짜 영상 경로 확인 필요
-        fakeVideo = new VideoCapture("src/main/resources/fake_loop.mp4");
+        realCam = new VideoCapture(0, CAP_DSHOW);
+        // 가짜 영상 경로 - ai/assets 폴더의 fake_sample.mp4 사용
+        fakeVideo = new VideoCapture("../ai/assets/fake_sample.mp4");
 
         if (!realCam.isOpened()) {
             System.err.println("Warning: Camera not found.");
@@ -63,29 +70,46 @@ public class VideoEngine {
         while (true) {
             long startTime = System.currentTimeMillis();
 
-            if (!realCam.read(realFrame))
+            // 1) Real 읽기 + 유효성 체크
+            boolean okReal = (realCam != null && realCam.isOpened() && realCam.read(realFrame));
+            if (!okReal || realFrame.empty() || realFrame.cols() <= 0 || realFrame.rows() <= 0) {
+                // 카메라가 잠깐 비는 경우가 있음 → 다음 루프로
+                continue;
+            }
+
+            // 2) Fake 읽기 + 루프 처리 + 유효성 체크
+            boolean okFake = (fakeVideo != null && fakeVideo.isOpened() && fakeVideo.read(fakeFrame));
+            if (!okFake || fakeFrame.empty()) {
+                fakeVideo.set(CAP_PROP_POS_FRAMES, 0);
+                okFake = fakeVideo.read(fakeFrame);
+                if (!okFake || fakeFrame.empty()) {
+                    // fake 소스가 아직 준비 안 됨 → 다음 루프
+                    continue;
+                }
+            }
+
+            // 3) resize 전에 target size 확정 (0 방지)
+            int w = realFrame.cols();
+            int h = realFrame.rows();
+            if (w <= 0 || h <= 0)
                 continue;
 
-            if (!fakeVideo.read(fakeFrame)) {
-                fakeVideo.set(CAP_PROP_POS_FRAMES, 0);
-                fakeVideo.read(fakeFrame);
-            }
+            resize(fakeFrame, fakeFrame, new org.bytedeco.opencv.opencv_core.Size(w, h));
 
-            // 해상도 조절 (fakeFrame을 realFrame 크기에 맞춤)
-            resize(fakeFrame, fakeFrame, realFrame.size());
-
-            // 1. [Accuracy] Lighting Matcher 적용 (EMA 필터 내장됨)
             matcher.match(realFrame, fakeFrame);
-
-            // 2. [Rapidity] Seamless Switcher 적용 (0.5s Alpha Blending)
             switcher.blend(realFrame, fakeFrame, outputFrame);
 
-            // 3. 결과 출력
             if (!outputFrame.empty()) {
                 opencv_highgui.imshow("No-Look Video Engine", outputFrame);
+
+                // Broadcast to StreamingController
+                BytePointer buf = new BytePointer();
+                imencode(".jpg", outputFrame, buf);
+                byte[] jpegData = buf.getStringBytes();
+                streamingController.pushFrame(jpegData);
+                buf.deallocate();
             }
 
-            // [Rapidity Monitoring] 연산 지연 발생 시 경고 로그 (30fps 기준 33ms 초과 시)
             long elapsedTime = System.currentTimeMillis() - startTime;
             if (elapsedTime > 33) {
                 System.err.println(
@@ -93,9 +117,9 @@ public class VideoEngine {
             }
 
             int waitTime = (int) Math.max(1, 33 - elapsedTime);
-
             if (opencv_highgui.waitKey(waitTime) >= 0)
                 break;
         }
     }
+
 }

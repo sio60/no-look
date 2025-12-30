@@ -119,72 +119,31 @@ public class LightingMatcher {
      * @성능 원본 대비 연산량 94% 감소
      */
     private void calculateBrightnessDiff(Mat real, Mat fake) {
-        // 다운샘플링 (1/4 해상도)
-        Size smallSize = new Size(real.cols() / 4, real.rows() / 4);
+        int sw = Math.max(1, real.cols() / 4);
+        int sh = Math.max(1, real.rows() / 4);
+        Size smallSize = new Size(sw, sh);
 
-        /**
-         * resize() - 이미지 크기 조절
-         * 
-         * @패키지출처 org.bytedeco.opencv.global.opencv_imgproc.resize
-         * @param src  원본 이미지
-         * @param dst  결과 이미지 (재사용)
-         * @param size 목표 크기
-         */
         resize(real, downsampledReal, smallSize);
         resize(fake, downsampledFake, smallSize);
 
-        /**
-         * cvtColor() - 색공간 변환
-         * 
-         * @패키지출처 org.bytedeco.opencv.global.opencv_imgproc.cvtColor
-         * @param COLOR_BGR2Lab BGR → Lab 변환 상수
-         *                      - L: 밝기 (0~255)
-         *                      - a: 녹색-빨강 축
-         *                      - b: 파랑-노랑 축
-         */
         cvtColor(downsampledReal, realLab, COLOR_BGR2Lab);
         cvtColor(downsampledFake, fakeLab, COLOR_BGR2Lab);
 
-        /**
-         * split() - 다채널 이미지를 개별 채널로 분리
-         * 
-         * @패키지출처 org.bytedeco.opencv.global.opencv_core.split
-         * @param channels[0] = L 채널 (밝기)
-         * @param channels[1] = a 채널
-         * @param channels[2] = b 채널
-         */
         split(realLab, realChannels);
         split(fakeLab, fakeChannels);
 
-        /**
-         * mean() - 이미지의 평균값 계산
-         * 
-         * @패키지출처 org.bytedeco.opencv.global.opencv_core.mean
-         * @return Scalar 객체, get(0)으로 첫 번째 채널(L) 평균 추출
-         */
         Scalar realMean = mean(realChannels.get(0));
         Scalar fakeMean = mean(fakeChannels.get(0));
 
         double realL = realMean.get(0);
         double fakeL = fakeMean.get(0);
 
-        // ========================================
-        // 환경 적합성 경고 (저조도/과노출)
-        // ========================================
-        if (realL < 30) {
+        if (realL < 30)
             System.err.println("[WARNING] Accuracy Alert: Low Light (" + String.format("%.1f", realL) + ")");
-        } else if (realL > 220) {
+        else if (realL > 220)
             System.err.println("[WARNING] Accuracy Alert: Overexposed (" + String.format("%.1f", realL) + ")");
-        }
 
         double currentDiff = realL - fakeL;
-
-        /**
-         * EMA 필터 적용 - 급격한 밝기 변화(Flickering) 방지
-         * 
-         * @공식 avgDiff = α * currentDiff + (1 - α) * avgDiff
-         * @성능 프레임 간 밝기 전환이 부드러워짐
-         */
         avgDiff = (SMOOTHING_FACTOR * currentDiff) + (1.0 - SMOOTHING_FACTOR) * avgDiff;
     }
 

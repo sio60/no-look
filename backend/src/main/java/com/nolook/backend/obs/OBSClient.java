@@ -73,6 +73,8 @@ public class OBSClient {
         try {
             String wsUrl = "ws://" + host + ":" + port;
             System.out.println("[OBS] Connecting to: " + wsUrl);
+            System.out.println("[OBS] Password loaded: "
+                    + (password != null && !password.isEmpty() ? "YES (length=" + password.length() + ")" : "NO"));
 
             client = new WebSocketClient(new URI(wsUrl)) {
 
