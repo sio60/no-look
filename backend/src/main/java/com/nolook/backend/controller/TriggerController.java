@@ -4,7 +4,9 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.nolook.backend.core.VideoState;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.lang.NonNull;
 import org.springframework.stereotype.Component;
+import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
@@ -53,7 +55,8 @@ public class TriggerController extends TextWebSocketHandler {
      *        }
      */
     @Override
-    protected void handleTextMessage(WebSocketSession session, TextMessage message) {
+    @SuppressWarnings("null")
+    protected void handleTextMessage(@NonNull WebSocketSession session, @NonNull TextMessage message) {
         try {
             String payload = message.getPayload();
 
@@ -119,7 +122,7 @@ public class TriggerController extends TextWebSocketHandler {
      * @패키지출처 org.springframework.web.socket.handler.TextWebSocketHandler.afterConnectionEstablished
      */
     @Override
-    public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+    public void afterConnectionEstablished(@NonNull WebSocketSession session) throws Exception {
         System.out.println("[WS] Client connected: " + session.getId());
     }
 
@@ -129,8 +132,8 @@ public class TriggerController extends TextWebSocketHandler {
      * @패키지출처 org.springframework.web.socket.handler.TextWebSocketHandler.afterConnectionClosed
      */
     @Override
-    public void afterConnectionClosed(WebSocketSession session,
-            org.springframework.web.socket.CloseStatus status) throws Exception {
+    public void afterConnectionClosed(@NonNull WebSocketSession session,
+            @NonNull CloseStatus status) throws Exception {
         System.out.println("[WS] Client disconnected: " + session.getId() + " (" + status + ")");
     }
 }
