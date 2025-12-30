@@ -39,6 +39,14 @@ dependencies {
     // JSON Processing
     implementation 'com.google.code.gson:gson:2.10.1'
 
+    // .env 파일 로딩
+    implementation 'me.paulschwarz:spring-dotenv:4.0.0'
+
+    // OBS WebSocket 클라이언트 (slf4j-simple 제외 - Logback 충돌 방지)
+    implementation('io.obs-websocket.community:client:2.0.0') {
+        exclude group: 'org.slf4j', module: 'slf4j-simple'
+    }
+
     // Lombok (코드 간소화)
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
@@ -53,4 +61,9 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
+}
+
+// SLF4J 충돌 방지: 전역적으로 slf4j-simple 제외
+configurations.all {
+    exclude group: 'org.slf4j', module: 'slf4j-simple'
 }

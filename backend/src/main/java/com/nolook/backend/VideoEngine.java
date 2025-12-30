@@ -6,6 +6,7 @@ import org.bytedeco.javacpp.Loader;
 import org.bytedeco.opencv.opencv_core.Mat;
 import org.bytedeco.opencv.opencv_videoio.VideoCapture;
 import org.bytedeco.opencv.global.opencv_highgui;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
@@ -13,7 +14,15 @@ import jakarta.annotation.PostConstruct;
 import static org.bytedeco.opencv.global.opencv_imgproc.resize;
 import static org.bytedeco.opencv.global.opencv_videoio.CAP_PROP_POS_FRAMES;
 
+/**
+ * 비디오 처리 엔진 - 실제 카메라와 가짜 영상을 블렌딩합니다.
+ * 
+ * @기능 프레임 캡처, 조명 매칭, 알파 블렌딩
+ * @성능 별도 스레드에서 30fps 처리
+ * @조건 video.engine.enabled=true 일 때만 활성화 (테스트 시 비활성화)
+ */
 @Service
+@ConditionalOnProperty(name = "video.engine.enabled", havingValue = "true", matchIfMissing = true)
 public class VideoEngine {
 
     private final LightingMatcher matcher;
