@@ -5,11 +5,13 @@ from typing import Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from engine import NoLookEngine
+# from engine import NoLookEngine
+from macro_engine import MacroEngine
 
 app = FastAPI()
 
-engine = NoLookEngine(webcam_id=0, transition_time=0.5, fps_limit=30.0)
+# engine = NoLookEngine(webcam_id=0, transition_time=0.5, fps_limit=30.0)
+macro_engine = MacroEngine()
 
 clients: Set[WebSocket] = set()
 
@@ -17,11 +19,16 @@ clients: Set[WebSocket] = set()
 class BoolPayload(BaseModel):
     value: bool
 
+class MacroPayload(BaseModel):
+    text: str
+    app: str = "zoom"  # zoom or discord
+
 
 @app.on_event("startup")
 async def startup():
-    engine.start()
-    asyncio.create_task(broadcast_state_loop())
+    # engine.start() # Camera conflict prevention: Frontend will use camera
+    # asyncio.create_task(broadcast_state_loop())
+    pass
 
 
 @app.on_event("shutdown")
@@ -32,17 +39,12 @@ async def shutdown():
 @app.websocket("/ws/state")
 async def ws_state(websocket: WebSocket):
     await websocket.accept()
-    clients.add(websocket)
+    # No backend state to push
     try:
-        # 연결 직후 현재 상태 1회 푸시
-        await websocket.send_json(engine.get_state())
-        while True:
-            # 프론트가 ping 보내도 되고 안 보내도 됨
+         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         pass
-    finally:
-        clients.discard(websocket)
 
 
 async def broadcast_state_loop():
@@ -64,24 +66,31 @@ async def broadcast_state_loop():
 
 
 # ---------- HTTP Controls ----------
-@app.post("/control/pause_fake")
-def pause_fake(payload: BoolPayload):
-    engine.set_pause_fake(payload.value)
-    return {"ok": True, "pauseFake": payload.value}
+# Legacy Controls - Disabled
+# @app.post("/control/pause_fake")
+# def pause_fake(payload: BoolPayload):
+#     engine.set_pause_fake(payload.value)
+#     return {"ok": True, "pauseFake": payload.value}
 
 
-@app.post("/control/force_real")
-def force_real(payload: BoolPayload):
-    engine.set_force_real(payload.value)
-    return {"ok": True, "forceReal": payload.value}
+# @app.post("/control/force_real")
+# def force_real(payload: BoolPayload):
+#     engine.set_force_real(payload.value)
+#     return {"ok": True, "forceReal": payload.value}
 
 
-@app.post("/control/reset_lock")
-def reset_lock():
-    engine.reset_lock()
-    return {"ok": True, "lockedFake": False}
+# @app.post("/control/reset_lock")
+# def reset_lock():
+#     engine.reset_lock()
+#     return {"ok": True, "lockedFake": False}
+
+
+@app.post("/control/macro")
+def trigger_macro(payload: MacroPayload):
+    success = macro_engine.type_text(payload.text, payload.app)
+    return {"ok": success, "message": f"Typed to {payload.app}" if success else "Failed (empty text?)"}
 
 
 @app.get("/state")
 def get_state():
-    return engine.get_state()
+    return {} # engine.get_state()
