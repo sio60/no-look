@@ -1,7 +1,6 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 
-
-export default function VideoPreview({ mode, addToast }) {
+export default function VideoPreview({ mode, ratio, addToast }) {
     const realVideoRef = useRef(null);
     const fakeCanvasRef = useRef(null);
     const streamRef = useRef(null);
@@ -9,9 +8,9 @@ export default function VideoPreview({ mode, addToast }) {
 
     const [hasPermission, setHasPermission] = useState(null);
     const [error, setError] = useState(null);
-    const [isTransitioning, setIsTransitioning] = useState(false);
 
-    // Start webcam
+    const isTransitioning = ratio > 0 && ratio < 1;
+
     const startWebcam = useCallback(async () => {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
@@ -19,32 +18,20 @@ export default function VideoPreview({ mode, addToast }) {
             });
 
             streamRef.current = stream;
-
-            if (realVideoRef.current) {
-                realVideoRef.current.srcObject = stream;
-            }
+            if (realVideoRef.current) realVideoRef.current.srcObject = stream;
 
             setHasPermission(true);
             setError(null);
-
         } catch (err) {
             console.error('Webcam error:', err);
             setHasPermission(false);
 
-            if (err.name === 'NotAllowedError') {
-                setError('카메라 권한이 거부되었습니다');
-                addToast?.('카메라 권한이 필요합니다', 'error');
-            } else if (err.name === 'NotFoundError') {
-                setError('카메라를 찾을 수 없습니다');
-                addToast?.('카메라가 연결되어 있지 않습니다', 'error');
-            } else {
-                setError(`카메라 오류: ${err.message}`);
-                addToast?.('카메라 연결 실패', 'error');
-            }
+            // ⚠️ 여기서 많이 터지는 이유: 파이썬(OpenCV)이 이미 웹캠 점유함
+            setError(`카메라 오류: ${err.name}`);
+            addToast?.('카메라 연결 실패 (AI가 웹캠 점유 중이면 가상카메라로 보세요)', 'error');
         }
     }, [addToast]);
 
-    // Stop webcam
     const stopWebcam = useCallback(() => {
         if (streamRef.current) {
             streamRef.current.getTracks().forEach((track) => track.stop());
@@ -56,11 +43,9 @@ export default function VideoPreview({ mode, addToast }) {
         }
     }, []);
 
-    // Apply grayscale filter to canvas
     const applyFakeFilter = useCallback(() => {
         const video = realVideoRef.current;
         const canvas = fakeCanvasRef.current;
-
         if (!video || !canvas || !video.videoWidth) return;
 
         const ctx = canvas.getContext('2d');
@@ -81,7 +66,6 @@ export default function VideoPreview({ mode, addToast }) {
                     data[i + 1] = adjusted;
                     data[i + 2] = adjusted;
                 }
-
                 ctx.putImageData(imageData, 0, 0);
 
                 ctx.fillStyle = 'rgba(255, 100, 100, 0.3)';
@@ -95,33 +79,19 @@ export default function VideoPreview({ mode, addToast }) {
         drawFrame();
     }, []);
 
-    // Initialize webcam on mount
     useEffect(() => {
         startWebcam();
         return stopWebcam;
     }, [startWebcam, stopWebcam]);
 
-    // Start canvas rendering when video is ready
     useEffect(() => {
         const video = realVideoRef.current;
+        if (!video) return;
 
-        const handlePlay = () => {
-            applyFakeFilter();
-        };
-
-        if (video) {
-            video.addEventListener('play', handlePlay);
-            return () => video.removeEventListener('play', handlePlay);
-        }
+        const handlePlay = () => applyFakeFilter();
+        video.addEventListener('play', handlePlay);
+        return () => video.removeEventListener('play', handlePlay);
     }, [applyFakeFilter]);
-
-    // Handle mode transitions
-    useEffect(() => {
-        if (mode === 'XFADING') {
-            setIsTransitioning(true);
-            setTimeout(() => setIsTransitioning(false), 500);
-        }
-    }, [mode]);
 
     const getPreviewClass = (previewType) => {
         const baseClass = 'preview-box';
@@ -137,22 +107,14 @@ export default function VideoPreview({ mode, addToast }) {
             {error && (
                 <div className="video-error">
                     {error}
-                    <button className="btn btn-small" onClick={startWebcam}>
-                        다시 시도
-                    </button>
+                    <button className="btn btn-small" onClick={startWebcam}>다시 시도</button>
                 </div>
             )}
 
             <div className="preview-container">
                 <div className={getPreviewClass('REAL')}>
                     <div className="preview-label">REAL</div>
-                    <video
-                        ref={realVideoRef}
-                        autoPlay
-                        muted
-                        playsInline
-                        className="preview-video"
-                    />
+                    <video ref={realVideoRef} autoPlay muted playsInline className="preview-video" />
                     {!hasPermission && hasPermission !== null && (
                         <div className="preview-placeholder">카메라 권한 필요</div>
                     )}
@@ -170,7 +132,7 @@ export default function VideoPreview({ mode, addToast }) {
             <div className="preview-mode-indicator">
                 <span className={`mode-dot ${mode === 'REAL' ? 'active' : ''}`}>●</span>
                 <span className="mode-text">
-          현재 모드: <strong>{mode}</strong>
+          현재 모드: <strong>{mode}</strong> ({Math.round(ratio * 100)}%)
                     {isTransitioning && ' (전환 중...)'}
         </span>
                 <span className={`mode-dot ${mode === 'FAKE' ? 'active' : ''}`}>●</span>

@@ -33,7 +33,7 @@ class GhostEars:
         self.config = config
         self._apply_config(config)
         
-        model_size = self.config.get("settings", {}).get("model_size", "small")
+        model_size = self.config.get("settings", {}).get("model_size")
         print(f"--- 🎧 [GhostEars] 모델 로딩 중... ({model_size}) ---")
         print(f"📌 트리거 키워드: {self.trigger_keywords}")
         
@@ -45,7 +45,20 @@ class GhostEars:
             self.model = None
             
         self.recognizer = sr.Recognizer()
-        self.temp_filename = "temp_ghost_audio.wav"
+        
+        # 현재 파일 위치(ai/sound) 기준으로 경로 설정 (어디서 실행하든 여기 저장됨)
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.temp_filename = os.path.join(base_dir, "temp_ghost_audio.wav")
+        self.transcript_file = os.path.join(base_dir, "transcript.txt")
+        
+        # [로그] 대화 내용 저장용 파일 (시작 시 초기화)
+        with open(self.transcript_file, "w", encoding="utf-8") as f:
+            f.write(f"=== [No-Look] 대화 로그 시작 ({model_size}) ===\n")
+
+    def save_to_log(self, text):
+        """인식된 텍스트를 파일에 저장 (GPT가 읽어갈 용도)"""
+        with open(self.transcript_file, "a", encoding="utf-8") as f:
+            f.write(f"{text}\n")
 
     def _apply_config(self, config):
         """설정값을 인스턴스 변수에 적용"""
@@ -99,7 +112,8 @@ class GhostEars:
         try:
             with sr.Microphone(device_index=self.device_index, sample_rate=44100) as source:
                 print("👂 [Listening] 듣는 중...")
-                audio_data = self.recognizer.listen(source, timeout=3, phrase_time_limit=5)
+                # [설정] 3초 침묵 시 중단, 최대 15초 녹음 (교수님 말씀 안 끊기게)
+                audio_data = self.recognizer.listen(source, timeout=3, phrase_time_limit=15)
                 
                 with open(self.temp_filename, "wb") as f:
                     f.write(audio_data.get_wav_data())
@@ -108,13 +122,17 @@ class GhostEars:
                     self.temp_filename, 
                     beam_size=5, 
                     language=self.language,
-                    initial_prompt="회의, 수업, 발표, 질문, 학생, 교수",  # 컨텍스트 힌트
                     vad_filter=True,  # 음성 구간만 인식 (노이즈 제거)
                     vad_parameters=dict(min_silence_duration_ms=500)
                 )
                 
                 full_text = ""
                 for segment in segments:
+                    # [환각 필터] 신뢰도가 너무 낮으면 무시 (로그 확률 -1.0 미만)
+                    if segment.avg_logprob < -1.0:
+                        print(f"👻 [Ghost Filter] 환각 제거됨 (신뢰도: {segment.avg_logprob:.2f}): {segment.text}")
+                        continue
+                        
                     full_text += segment.text
                 
                 return full_text.strip()
@@ -141,6 +159,7 @@ if __name__ == "__main__":
         
         if text:
             print(f"▶ 인식됨: {text}")
+            ears.save_to_log(text)  # [로그 저장]
             
             # 트리거 체크
             trigger = ears.check_trigger(text)
