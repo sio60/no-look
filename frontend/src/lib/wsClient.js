@@ -1,13 +1,9 @@
-/**
- * WebSocket client for real-time communication
- */
-
-const WS_URL = 'ws://127.0.0.1:8000/ws/control';
+const WS_URL = 'ws://127.0.0.1:8000/ws/state';
 
 export const ConnectionState = {
     CONNECTED: 'CONNECTED',
     CONNECTING: 'CONNECTING',
-    DISCONNECTED: 'DISCONNECTED'
+    DISCONNECTED: 'DISCONNECTED',
 };
 
 class WSClient {
@@ -16,81 +12,65 @@ class WSClient {
         this.state = ConnectionState.DISCONNECTED;
         this.onStateChange = null;
         this.onMessage = null;
-        this.reconnectTimeout = null;
+        this.pingTimer = null;
     }
 
     connect() {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            return;
-        }
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
 
         this.setState(ConnectionState.CONNECTING);
 
-        try {
-            this.ws = new WebSocket(WS_URL);
+        this.ws = new WebSocket(WS_URL);
 
-            this.ws.onopen = () => {
-                this.setState(ConnectionState.CONNECTED);
-            };
+        this.ws.onopen = () => {
+            this.setState(ConnectionState.CONNECTED);
 
-            this.ws.onclose = () => {
-                this.setState(ConnectionState.DISCONNECTED);
-                this.ws = null;
-            };
-
-            this.ws.onerror = () => {
-                this.setState(ConnectionState.DISCONNECTED);
-            };
-
-            this.ws.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    if (this.onMessage) {
-                        this.onMessage(data);
-                    }
-                } catch (e) {
-                    console.error('Failed to parse WebSocket message:', e);
+            // 서버 ws_state가 receive_text()로 대기하므로 keep-alive ping
+            this.pingTimer = setInterval(() => {
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send('ping');
                 }
-            };
-        } catch (error) {
-            console.error('WebSocket connection failed:', error);
+            }, 8000);
+        };
+
+        this.ws.onclose = () => {
+            this.cleanup();
             this.setState(ConnectionState.DISCONNECTED);
+        };
+
+        this.ws.onerror = () => {
+            this.cleanup();
+            this.setState(ConnectionState.DISCONNECTED);
+        };
+
+        this.ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                // data = { mode, ratio, lockedFake, pauseFake, forceReal, reasons, reaction, timestamp }
+                this.onMessage?.(data);
+            } catch (e) {
+                console.error('WS parse failed:', e);
+            }
+        };
+    }
+
+    cleanup() {
+        if (this.pingTimer) {
+            clearInterval(this.pingTimer);
+            this.pingTimer = null;
         }
+        this.ws = null;
     }
 
     disconnect() {
-        if (this.reconnectTimeout) {
-            clearTimeout(this.reconnectTimeout);
-            this.reconnectTimeout = null;
-        }
-        if (this.ws) {
-            this.ws.close();
-            this.ws = null;
-        }
+        this.cleanup();
+        if (this.ws) this.ws.close();
         this.setState(ConnectionState.DISCONNECTED);
-    }
-
-    send(message) {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(message));
-            return true;
-        }
-        return false;
-    }
-
-    sendSwitch(target, fadeMs = 500) {
-        return this.send({
-            type: 'switch',
-            target,
-            fade_ms: fadeMs
-        });
     }
 
     setState(state) {
         this.state = state;
-        if (this.onStateChange) {
-            this.onStateChange(state);
-        }
+        this.onStateChange?.(state);
     }
 
     getState() {
@@ -98,10 +78,4 @@ class WSClient {
     }
 }
 
-// Singleton instance
 export const wsClient = new WSClient();
-
-// Helper function for switch command
-export function sendSwitchCommand(target, fadeMs = 500) {
-    return wsClient.sendSwitch(target, fadeMs);
-}
