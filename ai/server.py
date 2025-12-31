@@ -24,6 +24,7 @@ class MacroPayload(BaseModel):
     app: str = "zoom"  # zoom or discord
 
 
+
 @app.on_event("startup")
 async def startup():
     # engine.start() # Camera conflict prevention: Frontend will use camera
