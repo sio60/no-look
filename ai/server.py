@@ -166,6 +166,23 @@ def get_state():
         }
     }
 
+@app.post("/control/pause_fake")
+def pause_fake(payload: BoolPayload):
+    engine.set_pause_fake(payload.value)
+    return {"ok": True, "pauseFake": payload.value}
+
+
+@app.post("/control/force_real")
+def force_real(payload: BoolPayload):
+    engine.set_force_real(payload.value)
+    return {"ok": True, "forceReal": payload.value}
+
+
+@app.post("/control/reset_lock")
+def reset_lock():
+    engine.reset_lock()
+    return {"ok": True, "lockedFake": False}
+
 
 @app.post("/control/macro")
 def trigger_macro(payload: MacroPayload):
