@@ -385,3 +385,23 @@ $RECYCLE.BIN/
 *.lnk
 
 # End of https://www.toptal.com/developers/gitignore/api/python,pycharm,windows
+# =========================
+# No-Look AI assets (video)
+# =========================
+ai/assets/*.mp4
+ai/assets/*.mov
+ai/assets/*.mkv
+ai/assets/*.avi
+ai/assets/*.webm
+
+# recordings/output
+ai/recordings/
+ai/output/
+ai/outputs/
+ai/tmp/
+ai/temp/
+ai/cache/
+ai/__pycache__/
+
+# optional: warmup/rolling buffer files
+ai/assets/warmup_*.mp4
