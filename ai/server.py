@@ -18,6 +18,7 @@ class BoolPayload(BaseModel):
     value: bool
 
 
+
 @app.on_event("startup")
 async def startup():
     engine.start()

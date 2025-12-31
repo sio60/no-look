@@ -89,6 +89,7 @@ class StreamGenerator:
                 self.cap.release()
             except Exception:
                 pass
+
         self.cap = None
 
     def _ensure_open(self) -> bool:

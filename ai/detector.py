@@ -20,6 +20,7 @@ class DistractionDetector:
         
         self.PITCH_THRESHOLD = 25 # Degrees looking down
 
+
     def check_head_pose(self, face_landmarks, img_w, img_h):
         """Estimate head pose (pitch, yaw) in degrees. Returns (pitch, yaw)."""
 

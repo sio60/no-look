@@ -14,6 +14,7 @@ class RollingRecorder:
     - keep_seconds: 유지할 전체 길이(초) (예: 300초 = 5분)
     """
 
+
     def __init__(
         self,
         out_dir: str,
