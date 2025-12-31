@@ -16,6 +16,7 @@
         "device_index": 5,
         "model_size": "medium",
         "language": "ko",
+        "sample_rate": 48000,
         "sensitivity": "normal"
     },
     "actions": {
