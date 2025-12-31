@@ -7,7 +7,6 @@ SpeechRecognition>=3.10.0
 numpy
 
 # GPU Support (CUDA)
-# cuDNN은 conda로 별도 설치 필요
 # Future: GPT Integration
 openai>=1.0.0
 
