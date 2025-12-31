@@ -20,7 +20,7 @@ class VirtualCam:
     """
     OpenCV(BGR) 프레임을 가상카메라(OBS Virtual Camera 등)로 송출.
     - macOS/Windows 공용: pyvirtualcam 사용
-    - 기본 fmt=BGR 시도, 실패하면 RGB로 fallback
+    - fmt=BGR 우선, 실패 시 RGB로 fallback
     """
 
     def __init__(
@@ -30,7 +30,7 @@ class VirtualCam:
         fps: float = 30.0,
         *,
         backend: Optional[str] = None,   # 보통 None 또는 'obs'
-        device: Optional[str] = None,    # 보통 None
+        device: Optional[str] = None,
         print_fps: bool = False,
         pace: bool = False,             # True면 sleep_until_next_frame로 페이싱
     ):
@@ -43,25 +43,23 @@ class VirtualCam:
         self.w = int(width)
         self.h = int(height)
         self.fps = float(fps) if fps and fps > 0 else 30.0
+
         self.backend = backend
         self.device = device
         self.print_fps = bool(print_fps)
         self.pace = bool(pace)
 
         self._cam: Optional[pyvirtualcam.Camera] = None
-        self._fmt = None
         self._need_bgr_to_rgb = False
 
         self._open()
 
     def _open(self) -> None:
-        # backend 후보: 명시된 backend → 'obs' → None(자동)
         backend_candidates = []
         if self.backend is not None:
             backend_candidates.append(self.backend)
         backend_candidates += ["obs", None]
 
-        # fmt 후보: BGR → RGB
         fmt_candidates = [PixelFormat.BGR, PixelFormat.RGB]
 
         last_err = None
@@ -78,7 +76,6 @@ class VirtualCam:
                         print_fps=self.print_fps,
                     )
                     self._cam = cam
-                    self._fmt = fmt
                     self._need_bgr_to_rgb = (fmt == PixelFormat.RGB)
                     print(f"Virtual Camera initialized: {cam.device} (backend={cam.backend}, fmt={fmt})")
                     return
@@ -87,9 +84,9 @@ class VirtualCam:
 
         raise RuntimeError(
             f"VirtualCam open failed: {last_err}\n"
-            f"- macOS: OBS 설치 후 Virtual Camera를 한 번 Start/Stop 해서 등록 필요할 수 있음\n"
-            f"- macOS: 카메라/화면녹화 권한도 확인\n"
-            f"- backend/device 지정이 필요하면 VirtualCam(..., backend='obs') 또는 device='...'로 시도"
+            f"- macOS: OBS 설치 + Virtual Camera Start/Stop 1회(등록)\n"
+            f"- macOS: 권한(Privacy & Security) 확인\n"
+            f"- 필요하면 VirtualCam(..., backend='obs') 또는 device 지정"
         )
 
     def close(self) -> None:
@@ -101,17 +98,12 @@ class VirtualCam:
         self._cam = None
 
     def send(self, frame: np.ndarray) -> None:
-        """
-        frame: OpenCV BGR (H,W,3) uint8
-        """
         if self._cam is None or frame is None:
             return
 
-        # 크기 맞추기
         if frame.shape[0] != self.h or frame.shape[1] != self.w:
             frame = cv2.resize(frame, (self.w, self.h), interpolation=cv2.INTER_LINEAR)
 
-        # 채널 보정
         if frame.ndim == 2:
             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
         elif frame.shape[2] == 4:
@@ -120,7 +112,6 @@ class VirtualCam:
         if frame.dtype != np.uint8:
             frame = frame.astype(np.uint8)
 
-        # fmt가 RGB로 열린 경우 변환
         if self._need_bgr_to_rgb:
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
