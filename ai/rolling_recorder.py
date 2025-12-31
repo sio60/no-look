@@ -1,9 +1,10 @@
 # ai/rolling_recorder.py
 import os
 import time
+import sys
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, List, Optional, Tuple
+from typing import Deque, List, Optional
 
 import cv2
 
@@ -14,21 +15,38 @@ class Segment:
     start_ts: float
     end_ts: float
 
-def _make_writer(path: str, w: int, h: int, fps: float) -> cv2.VideoWriter:
-    # ✅ Windows에서 제일 무난: mp4v (openh264 안 탐)
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(path, fourcc, fps, (w, h))
-    if writer.isOpened():
-        return writer
 
-    # 그래도 안 열리면 컨테이너/코덱 문제라서 avi로 바꾸는게 안전
-    raise RuntimeError("VideoWriter open failed. Try changing extension to .avi and codec to MJPG/XVID.")
+def _make_writer(base_path: str, w: int, h: int, fps: float) -> tuple[cv2.VideoWriter, str]:
+    """
+    mac/win 환경에서 VideoWriter 코덱이 제각각이라,
+    열리는 조합을 '순서대로' 찾아서 사용.
+    returns (writer, actual_path)
+    """
+    root, _ = os.path.splitext(base_path)
 
+    candidates = [
+        (".mp4", "mp4v"),
+        (".mp4", "avc1"),
+        (".mov", "avc1"),
+        (".avi", "MJPG"),  # ✅ 최후의 보루 (가장 안정)
+        (".avi", "XVID"),
+    ]
+
+    last_err = None
+    for ext, cc in candidates:
+        path = root + ext
+        fourcc = cv2.VideoWriter_fourcc(*cc)
+        writer = cv2.VideoWriter(path, fourcc, fps, (w, h))
+        if writer.isOpened():
+            return writer, path
+        last_err = f"failed codec={cc} ext={ext}"
+
+    raise RuntimeError(f"VideoWriter open failed ({last_err}). Try installing opencv with ffmpeg or use AVI(MJPG).")
 
 
 class RollingRecorder:
     """
-    - 실시간 프레임을 N초 단위(seg)로 잘라 mp4로 저장
+    - 실시간 프레임을 N초 단위(seg)로 잘라 저장
     - 최근 rolling_seconds 만큼만 유지(오래된 seg는 삭제)
     - FAKE 시점엔 가장 오래된 seg부터 순서대로 재생(= 딜레이 영상)
     """
@@ -39,7 +57,7 @@ class RollingRecorder:
         width: int,
         height: int,
         fps: float,
-        rolling_seconds: int = 120,        # ✅ 기본 2분
+        rolling_seconds: int = 120,
         segment_seconds: int = 10,
     ):
         self.out_dir = out_dir
@@ -66,7 +84,10 @@ class RollingRecorder:
         self.recording_enabled: bool = True
 
     def set_recording_enabled(self, enabled: bool) -> None:
-        self.recording_enabled = bool(enabled)
+        enabled = bool(enabled)
+        if self.recording_enabled == enabled:
+            return
+        self.recording_enabled = enabled
         if not self.recording_enabled:
             self._close_writer()
 
@@ -74,11 +95,12 @@ class RollingRecorder:
         self._close_writer()
 
         name = f"seg_{int(now_ts*1000)}.mp4"
-        path = os.path.join(self.out_dir, name)
+        base_path = os.path.join(self.out_dir, name)
 
-        self._writer = _make_writer(path, self.w, self.h, self.fps)
+        writer, actual_path = _make_writer(base_path, self.w, self.h, self.fps)
+        self._writer = writer
         self._seg_start_ts = now_ts
-        self._seg_path = path
+        self._seg_path = actual_path
 
     def _close_writer(self) -> None:
         if self._writer is not None:
@@ -97,7 +119,6 @@ class RollingRecorder:
         self._seg_path = None
 
     def _cleanup_old(self, now_ts: float) -> None:
-        # rolling_seconds보다 오래된 세그 삭제
         cutoff = now_ts - self.rolling_seconds
         while self._segments and self._segments[0].end_ts < cutoff:
             seg = self._segments.popleft()
@@ -107,13 +128,7 @@ class RollingRecorder:
                 pass
 
     def update(self, frame, now_ts: float) -> None:
-        """
-        REAL 모드에서 매 프레임 호출해서 버퍼를 유지.
-        """
-        if not self.recording_enabled:
-            return
-
-        if frame is None:
+        if not self.recording_enabled or frame is None:
             return
 
         if frame.shape[1] != self.w or frame.shape[0] != self.h:
@@ -122,20 +137,16 @@ class RollingRecorder:
         if self._writer is None:
             self._open_new_segment(now_ts)
 
-        # segment_seconds 경과하면 세그 교체
         if self._seg_start_ts is not None and (now_ts - self._seg_start_ts) >= self.segment_seconds:
             self._open_new_segment(now_ts)
 
-        # write
         if self._writer is not None:
             self._writer.write(frame)
 
         self._cleanup_old(now_ts)
 
+    # ---------- playback ----------
     def start_playback(self) -> None:
-        """
-        현재 보유중인 seg들을 순서대로 재생 시작(가장 오래된 것부터).
-        """
         self.stop_playback()
         self._play_paths = [s.path for s in list(self._segments)]
         self._play_index = 0
@@ -156,9 +167,6 @@ class RollingRecorder:
         self._play_cap = cap
 
     def read_playback_frame(self):
-        """
-        playback 중 다음 프레임 반환. 없으면 None.
-        """
         if self._play_cap is None:
             return None
 
@@ -177,7 +185,6 @@ class RollingRecorder:
 
         self._play_index += 1
         if self._play_index >= len(self._play_paths):
-            # 끝까지 갔으면 루프(자연스러운 반복)
             self._play_index = 0
 
         self._open_play_cap()

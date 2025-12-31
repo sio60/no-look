@@ -1,9 +1,9 @@
 {
     "triggers": {
         "keywords": [
-            "정상화",
-            "신창섭",
-            "200만"
+            "승준",
+            "승준씨",
+            "질문"
         ],
         "question_patterns": [
             "?",
@@ -13,7 +13,11 @@
         ]
     },
     "settings": {
+<<<<<<< HEAD
         "device_index": 2,
+=======
+        "device_index": 1,
+>>>>>>> main
         "model_size": "medium",
         "language": "ko",
         "sample_rate": 48000,
