@@ -123,26 +123,34 @@ const FaceDetector = ({ onDistraction }) => {
             let potentialDistraction = false;
             let currentReason = "";
 
-            // A. Hands (Trigger only if occupying > 1/3 of screen)
-            if (handsDetected) {
-                // Calculate Bounding Box Area
-                let distinctHandArea = 0;
-                // handResults.landmarks is an array of arrays (one for each hand)
-                for (const hand of handResults.landmarks) {
-                    let minX = 1, minY = 1, maxX = 0, maxY = 0;
-                    for (const lm of hand) {
-                        if (lm.x < minX) minX = lm.x;
-                        if (lm.x > maxX) maxX = lm.x;
-                        if (lm.y < minY) minY = lm.y;
-                        if (lm.y > maxY) maxY = lm.y;
-                    }
-                    const width = maxX - minX;
-                    const height = maxY - minY;
-                    const area = width * height;
+            // A. Hands (Face-Hand Overlap Logic)
+            // Instead of just size, we check if hand touches/overlaps the face (Phone use, Touching face)
+            if (handsDetected && faceResults.faceLandmarks && faceResults.faceLandmarks.length > 0) {
+                const faceLms = faceResults.faceLandmarks[0];
+                let fMinX = 1, fMinY = 1, fMaxX = 0, fMaxY = 0;
+                for (const lm of faceLms) {
+                    if (lm.x < fMinX) fMinX = lm.x;
+                    if (lm.x > fMaxX) fMaxX = lm.x;
+                    if (lm.y < fMinY) fMinY = lm.y;
+                    if (lm.y > fMaxY) fMaxY = lm.y;
+                }
 
-                    if (area > 0.33) { // 1/3 of screen
+                // Check each detected hand
+                for (const hand of handResults.landmarks) {
+                    let hMinX = 1, hMinY = 1, hMaxX = 0, hMaxY = 0;
+                    for (const lm of hand) {
+                        if (lm.x < hMinX) hMinX = lm.x;
+                        if (lm.x > hMaxX) hMaxX = lm.x;
+                        if (lm.y < hMinY) hMinY = lm.y;
+                        if (lm.y > hMaxY) hMaxY = lm.y;
+                    }
+
+                    // Check Overlap (AABB)
+                    const overlap = !(hMaxX < fMinX || hMinX > fMaxX || hMaxY < fMinY || hMinY > fMaxY);
+
+                    if (overlap) {
                         potentialDistraction = true;
-                        currentReason = `Hand Detected (${Math.round(area * 100)}% Area)`;
+                        currentReason = "Hand Touching Face/Phone";
                         break;
                     }
                 }
