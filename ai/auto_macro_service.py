@@ -1,58 +1,71 @@
 import time
 import asyncio
-import requests
+import os
+import sys
+
+# ai/sound 폴더를 path에 추가하여 stt_core를 불러올 수 있게 함
+base_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(base_dir, "sound"))
+
 from macro_bot import MacroBot
 from zoom_automation import ZoomAutomator
-
-# 기존 server.py의 상태를 모니터링하기 위한 설정
-SERVER_URL = "http://127.0.0.1:8000/state"
+from stt_core import GhostEars, load_config
 
 async def run_auto_macro():
+    # 1. 초기화
+    print("🚀 [Zoom 자동 매크로 서비스] 가동 중... (STT 연동 모드)")
+    
+    config = load_config()
+    ears = GhostEars(config)
     bot = MacroBot()
     automator = ZoomAutomator()
     
-    last_processed_text = ""
-    
-    print("🚀 [Zoom 자동 매크로 서비스] 가동 중...")
-    print("💡 터미널 1에서 server.py가 실행 중이어야 합니다.")
-    
-    while True:
-        try:
-            # 1. 서버로부터 현재 STT 상태 가져오기 (실제로는 WebSocket이 좋으나 최소 수정을 위해 폴링)
-            # 대시보드의 SttPanel에서 transcript가 업데이트되어 서버로 전달되는 구조라면 여기서 읽을 수 있음
-            # 하지만 현재 server.py는 transcript를 들고 있지 않으므로, 
-            # 사용자 요청대로 'STT 출력 기반'으로 작동하기 위해 가상으로 STT 서버를 체크하는 루프를 만듭니다.
-            
-            # 여기서는 단순히 테스트를 위해 고정된 텍스트가 들어왔다고 가정하거나
-            # 사용자에게 직접 입력을 유도하는 방식으로 먼저 검증합니다.
-            
-            user_input = input("\n[대화 입력] (또는 Enter 시 자동 감지 모드 시뮬레이션): ").strip()
-            
-            if not user_input:
-                print("⏳ 대화 대기 중... (Ctrl+C로 종료)")
-                time.sleep(2)
-                continue
+    print("-" * 50)
+    print(f"🎤 마이크 인덱스: {ears.device_index}")
+    print(f"🧠 AI 모델: {bot.model.model_name if bot.model else 'None'}")
+    print("💡 Enter: 확인 및 전송 / Right Shift: 취소")
+    print("-" * 50)
+
+    # 2. STT 백그라운드 청취 시작
+    if not ears.start_listening():
+        print("❌ 마이크를 시작할 수 없습니다. 장치 번호를 확인하세요.")
+        return
+
+    try:
+        # 3. 텍스트 발생 감시 루프
+        print("👂 소리를 듣고 있습니다... 설정된 키워드나 질문이 들리면 AI가 작동합니다.")
+        for text in ears.process_queue():
+            if text:
+                print(f"\n▶ 인식된 대화: {text}")
                 
-            if user_input == last_processed_text:
-                continue
+                # 트리거 체크 (키워드 또는 질문)
+                trigger = ears.check_trigger(text)
                 
-            # 2. Gemini 답변 생성
-            print("🧠 AI 분석 중...")
-            suggestion = bot.get_suggestion(user_input)
-            
-            if suggestion:
-                # 3. 사용자 확인 및 전송
-                automator.wait_for_user_confirmation(suggestion)
-                last_processed_text = user_input
-            else:
-                print("⚠️ 답변을 생성하지 못했습니다.")
-                
-        except KeyboardInterrupt:
-            print("\n👋 서비스를 종료합니다.")
-            break
-        except Exception as e:
-            print(f"❌ 오류 발생: {e}")
-            time.sleep(5)
+                if trigger:
+                    trigger_type, matched = trigger
+                    print(f"🎯 트리거 감지! ({trigger_type}: {matched})")
+                    
+                    # Gemini 답변 생성
+                    print("🧠 AI가 답변을 생각하는 중...")
+                    suggestion = bot.get_suggestion(text)
+                    
+                    if suggestion:
+                        # 사용자 확인 및 전송
+                        print(f"💡 추천 답변: {suggestion}")
+                        print("👉 [Enter] 전송 / [Right Shift] 취소")
+                        
+                        automator.wait_for_user_confirmation(suggestion)
+                    else:
+                        print("⚠️ 답변 생성 실패")
+                else:
+                    # 트리거가 없을 때는 그냥 로그만 남기고 조용히 넘어감
+                    pass
+
+    except KeyboardInterrupt:
+        print("\n👋 서비스를 종료합니다.")
+    finally:
+        if hasattr(ears, 'stopper'):
+            ears.stopper(wait_for_stop=False)
 
 if __name__ == "__main__":
     asyncio.run(run_auto_macro())

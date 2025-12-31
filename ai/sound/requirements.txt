@@ -2,6 +2,8 @@
 # STT (Speech-to-Text)
 faster-whisper>=1.0.0
 SpeechRecognition>=3.10.0
+PyAudio
+pyaudio
 
 # Audio Processing
 numpy

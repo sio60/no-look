@@ -40,13 +40,16 @@ class GhostEars:
         print(f"📌 트리거 키워드: {self.trigger_keywords}")
         
         try:
-            self.model = WhisperModel(model_size, device="cuda", compute_type="int8")
+            self.model = WhisperModel(model_size, device="auto", compute_type="int8")
             print("✅ 모델 로딩 완료!")
         except Exception as e:
             print(f"❌ 모델 로딩 실패: {e}")
             self.model = None
             
         self.recognizer = sr.Recognizer()
+        # 가상 케이블 소리는 작을 수 있으므로 문턱값을 낮춤
+        self.recognizer.energy_threshold = 100 
+        self.recognizer.dynamic_energy_threshold = True
         
         
         # [Queue] 오디오 데이터 대기열 (비동기 처리용)
@@ -63,7 +66,7 @@ class GhostEars:
 
     def _audio_callback(self, recognizer, audio):
         """백그라운드에서 오디오가 캡처되면 Queue에 넣음"""
-        # print("🎤 [Audio] 오디오 캡처됨 (Queue 적재)")
+        print(f"🎤 [Audio] 신호 감지됨! (데이터 크기: {len(audio.get_raw_data())} bytes)")
         self.audio_queue.put(audio)
 
     def start_listening(self):
@@ -76,7 +79,7 @@ class GhostEars:
             self.stopper = self.recognizer.listen_in_background(
                 self.source, 
                 self._audio_callback, 
-                phrase_time_limit=15
+                phrase_time_limit=5 # 응답 속도를 위해 짧게 끊음
             )
             return True
         except Exception as e:
