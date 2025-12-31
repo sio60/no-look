@@ -7,10 +7,14 @@ Backend: AI Models Only
 """
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+import base64
+import numpy as np
+import cv2
 
 from bot import MeetingBot
 from macro_bot import MacroBot
 from macro_engine import MacroEngine
+from bridge import VirtualCam
 
 app = FastAPI()
 
@@ -18,6 +22,10 @@ app = FastAPI()
 meeting_bot = MeetingBot()
 macro_bot = MacroBot()
 macro_engine = MacroEngine()
+
+# Virtual Camera (initialized on first frame)
+virtual_cam = None
+virtual_cam_lock = None
 
 
 class MacroPayload(BaseModel):
@@ -75,6 +83,56 @@ async def ai_service(websocket: WebSocket):
                 
     except WebSocketDisconnect:
         print("❌ Frontend disconnected from AI service")
+
+
+@app.websocket("/ws/video")
+async def video_stream(websocket: WebSocket):
+    """
+    Video Streaming WebSocket
+    Receives blended frames from frontend and outputs to Virtual Camera
+    """
+    global virtual_cam
+    await websocket.accept()
+    print("🎥 Frontend connected to /ws/video")
+    
+    try:
+        while True:
+            data = await websocket.receive_json()
+            frame_b64 = data.get("frame")
+            
+            if not frame_b64:
+                continue
+            
+            # Decode base64 frame
+            try:
+                # Remove data:image/jpeg;base64, prefix if present
+                if ',' in frame_b64:
+                    frame_b64 = frame_b64.split(',')[1]
+                
+                img_bytes = base64.b64decode(frame_b64)
+                nparr = np.frombuffer(img_bytes, np.uint8)
+                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                
+                if frame is None:
+                    print("⚠️ Failed to decode frame")
+                    continue
+                
+                # Initialize Virtual Camera on first frame
+                if virtual_cam is None:
+                    h, w = frame.shape[:2]
+                    print(f"🎥 Initializing Virtual Camera: {w}x{h}")
+                    virtual_cam = VirtualCam(width=w, height=h, fps=30.0)
+                    print("✅ Virtual Camera initialized")
+                
+                # Send to Virtual Camera
+                virtual_cam.send(frame)
+                
+            except Exception as e:
+                print(f"❌ Frame processing error: {e}")
+                continue
+                
+    except WebSocketDisconnect:
+        print("🎥 Frontend disconnected from /ws/video")
 
 
 @app.websocket("/ws/state")

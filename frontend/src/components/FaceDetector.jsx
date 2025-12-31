@@ -7,6 +7,10 @@ const FaceDetector = ({ onDistraction }) => {
     const videoRef = useRef(null);
     const canvasRef = useRef(null);
 
+    // Fake video elements
+    const fakeVideoRef = useRef(null);
+    const blendCanvasRef = useRef(null);
+
     // AI Models (MediaPipe)
     const [faceLandmarker, setFaceLandmarker] = useState(null);
     const [handLandmarker, setHandLandmarker] = useState(null);
@@ -20,26 +24,37 @@ const FaceDetector = ({ onDistraction }) => {
     const [distractionReason, setDistractionReason] = useState("");
     const [botReaction, setBotReaction] = useState(null);
 
+    // Recording & Blending State
+    const [fakeVideoUrl, setFakeVideoUrl] = useState(null);
+    const [isRecording, setIsRecording] = useState(false);
+    const [blendRatio, setBlendRatio] = useState(0); // 0=real, 1=fake
+    const recordingChunks = useRef([]);
+    const mediaRecorderRef = useRef(null);
+
     // OBS State
     const obsRef = useRef(new OBSWebSocket());
     const [obsConnected, setObsConnected] = useState(false);
 
-    // AI Backend WebSocket
+    // WebSocket State
     const aiWsRef = useRef(null);
+    const videoWsRef = useRef(null);
     const [aiConnected, setAiConnected] = useState(false);
+    const [videoConnected, setVideoConnected] = useState(false);
 
     // Refs for loop control
     const requestRef = useRef(null);
     const runningRef = useRef(false);
     const lastVideoTimeRef = useRef(-1);
     const distractionStartTimeRef = useRef(null);
+    const blendIntervalRef = useRef(null);
 
     const runningMode = "VIDEO";
 
-    // 1. Initialize OBS & Models & AI
+    // 1. Initialize OBS & Models & WebSockets
     useEffect(() => {
         connectOBS();
         connectAI();
+        connectVideo();
 
         const createLandmarkers = async () => {
             console.log("🔄 Loading MediaPipe models...");
@@ -70,13 +85,14 @@ const FaceDetector = ({ onDistraction }) => {
             });
             setHandLandmarker(handLandmarker);
             console.log("✅ HandLandmarker loaded");
-            console.log("✅ All MediaPipe models ready!");
         };
         createLandmarkers();
 
         return () => {
             if (obsConnected) obsRef.current.disconnect();
             if (aiWsRef.current) aiWsRef.current.close();
+            if (videoWsRef.current) videoWsRef.current.close();
+            if (blendIntervalRef.current) clearInterval(blendIntervalRef.current);
         };
     }, []);
 
@@ -134,7 +150,30 @@ const FaceDetector = ({ onDistraction }) => {
         aiWsRef.current = ws;
     };
 
-    // 4. Request AI reaction when distracted
+    // 4. Video WebSocket (Virtual Camera)
+    const connectVideo = () => {
+        const ws = new WebSocket("ws://localhost:8000/ws/video");
+
+        ws.onopen = () => {
+            console.log("🎥 Video WebSocket Connected");
+            setVideoConnected(true);
+        };
+
+        ws.onerror = (error) => {
+            console.error("❌ Video WebSocket Error:", error);
+            setVideoConnected(false);
+        };
+
+        ws.onclose = () => {
+            console.log("❌ Video WebSocket Disconnected");
+            setVideoConnected(false);
+            setTimeout(connectVideo, 3000);
+        };
+
+        videoWsRef.current = ws;
+    };
+
+    // 5. Request AI reaction when distracted
     useEffect(() => {
         if (isDistracted && aiWsRef.current && aiWsRef.current.readyState === WebSocket.OPEN) {
             aiWsRef.current.send(JSON.stringify({
@@ -144,16 +183,27 @@ const FaceDetector = ({ onDistraction }) => {
         }
     }, [isDistracted]);
 
-    // 5. Effect: Handle Distraction -> OBS Switch
+    // 6. Smooth blend transition animation
     useEffect(() => {
-        if (isDistracted) {
-            console.log("🚨 Distracted! Switching to Fake");
-            switchOBSScene("Fake");
-        } else {
-            console.log("✅ Safe! Switching to Real");
-            switchOBSScene("Real");
-        }
-        if (onDistraction) onDistraction(isDistracted);
+        const targetRatio = isDistracted ? 1 : 0;
+        const duration = 500; // 0.5s
+        const steps = 15; // 30fps * 0.5s
+        const increment = (targetRatio - blendRatio) / steps;
+
+        let currentStep = 0;
+        const animationInterval = setInterval(() => {
+            currentStep++;
+            setBlendRatio(prev => {
+                const newRatio = prev + increment;
+                return Math.max(0, Math.min(1, newRatio));
+            });
+
+            if (currentStep >= steps) {
+                clearInterval(animationInterval);
+            }
+        }, duration / steps);
+
+        return () => clearInterval(animationInterval);
     }, [isDistracted]);
 
     // Cleanup loop
@@ -177,7 +227,72 @@ const FaceDetector = ({ onDistraction }) => {
         return (getEyeRatio(leftEyeIndices) + getEyeRatio(rightEyeIndices)) / 2;
     };
 
-    // 6. Main Prediction Loop
+    // 7. Start 5s video recording (warmup)
+    const startRecording = (stream) => {
+        console.log("🎬 Starting 5s recording for fake video...");
+        setIsRecording(true);
+        recordingChunks.current = [];
+
+        const recorder = new MediaRecorder(stream, {
+            mimeType: 'video/webm;codecs=vp8'
+        });
+
+        recorder.ondataavailable = (e) => {
+            if (e.data.size > 0) {
+                recordingChunks.current.push(e.data);
+            }
+        };
+
+        recorder.onstop = () => {
+            console.log("✅ Recording stopped");
+            const blob = new Blob(recordingChunks.current, { type: 'video/webm' });
+            const url = URL.createObjectURL(blob);
+            setFakeVideoUrl(url);
+            setIsRecording(false);
+            console.log("✅ Fake video ready:", url);
+        };
+
+        recorder.start();
+        mediaRecorderRef.current = recorder;
+
+        // Stop after 5 seconds
+        setTimeout(() => {
+            if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+                mediaRecorderRef.current.stop();
+            }
+        }, 5000);
+    };
+
+    // 8. Blend frames and send to backend
+    const blendAndSend = () => {
+        const realVideo = videoRef.current;
+        const fakeVideo = fakeVideoRef.current;
+        const canvas = blendCanvasRef.current;
+
+        if (!canvas || !realVideo || realVideo.readyState !== 4) return;
+
+        const ctx = canvas.getContext('2d');
+        canvas.width = 1280;
+        canvas.height = 720;
+
+        // Draw real video
+        ctx.globalAlpha = 1 - blendRatio;
+        ctx.drawImage(realVideo, 0, 0, 1280, 720);
+
+        // Draw fake video if available and blending
+        if (fakeVideo && fakeVideo.readyState === 4 && blendRatio > 0) {
+            ctx.globalAlpha = blendRatio;
+            ctx.drawImage(fakeVideo, 0, 0, 1280, 720);
+        }
+
+        // Send to backend
+        if (videoWsRef.current && videoWsRef.current.readyState === WebSocket.OPEN) {
+            const frameData = canvas.toDataURL('image/jpeg', 0.7);
+            videoWsRef.current.send(JSON.stringify({ frame: frameData }));
+        }
+    };
+
+    // 9. Main Prediction Loop
     const predictWebcam = async () => {
         const video = videoRef.current;
         const canvas = canvasRef.current;
@@ -237,7 +352,7 @@ const FaceDetector = ({ onDistraction }) => {
                 setIsDistracted(false);
             }
 
-            // Draw
+            // Draw landmarks
             const ctx = canvas.getContext("2d");
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             const drawingUtils = new DrawingUtils(ctx);
@@ -258,12 +373,11 @@ const FaceDetector = ({ onDistraction }) => {
         }
     };
 
-    // 7. Camera Toggle with DEBUG LOGS
+    // 10. Camera Toggle
     const enableCam = () => {
         console.log("🎥 ========== ENABLE CAM CALLED ==========");
         console.log("  faceLandmarker:", faceLandmarker ? "✅ Ready" : "❌ Not loaded");
         console.log("  handLandmarker:", handLandmarker ? "✅ Ready" : "❌ Not loaded");
-        console.log("  webcamRunning:", webcamRunning);
 
         if (!faceLandmarker || !handLandmarker) {
             console.error("❌ MediaPipe models not loaded yet!");
@@ -277,6 +391,7 @@ const FaceDetector = ({ onDistraction }) => {
             runningRef.current = false;
             setIsDistracted(false);
             if (requestRef.current) cancelAnimationFrame(requestRef.current);
+            if (blendIntervalRef.current) clearInterval(blendIntervalRef.current);
             if (videoRef.current && videoRef.current.srcObject) {
                 videoRef.current.srcObject.getTracks().forEach(t => t.stop());
                 videoRef.current.srcObject = null;
@@ -288,57 +403,55 @@ const FaceDetector = ({ onDistraction }) => {
             runningRef.current = true;
             setIsDistracted(false);
 
-            const constraints = { video: true };
-            console.log("📹 Requesting webcam with constraints:", constraints);
+            console.log("📹 Finding REAL webcam...");
 
-            navigator.mediaDevices.getUserMedia(constraints)
-                .then((stream) => {
-                    console.log("✅ SUCCESS! Webcam stream obtained");
-                    console.log("  Stream ID:", stream.id);
-                    console.log("  Video tracks:", stream.getVideoTracks().length);
-                    stream.getVideoTracks().forEach((track, idx) => {
-                        console.log(`    Track ${idx}:`, track.label, track.enabled ? "✅" : "❌");
+            navigator.mediaDevices.enumerateDevices()
+                .then(devices => {
+                    const videoDevices = devices.filter(d => d.kind === 'videoinput');
+                    console.log(`📹 Video devices: ${videoDevices.length}`);
+                    videoDevices.forEach((d, i) => console.log(`  [${i}] ${d.label}`));
+
+                    const realWebcams = videoDevices.filter(d => {
+                        const label = d.label.toLowerCase();
+                        return !label.includes('obs') && !label.includes('virtual');
                     });
 
-                    if (videoRef.current) {
-                        videoRef.current.srcObject = stream;
-                        console.log("✅ Stream assigned to <video> element");
-                        videoRef.current.addEventListener("loadeddata", () => {
-                            console.log("✅ Video loadeddata event fired");
-                            console.log("  Video size:", videoRef.current.videoWidth, "x", videoRef.current.videoHeight);
-                            predictWebcam();
-                        });
-                    } else {
-                        console.error("❌ videoRef.current is NULL!");
-                    }
+                    const selected = realWebcams[0] || videoDevices[0];
+                    console.log(`✅ Selected: ${selected.label}`);
+
+                    return {
+                        video: {
+                            deviceId: selected.deviceId ? { exact: selected.deviceId } : undefined,
+                            width: { ideal: 1280 },
+                            height: { ideal: 720 }
+                        }
+                    };
+                })
+                .then(constraints => navigator.mediaDevices.getUserMedia(constraints))
+                .then((stream) => {
+                    console.log("✅ Webcam stream obtained");
+
+                    videoRef.current.srcObject = stream;
+                    videoRef.current.addEventListener("loadeddata", () => {
+                        console.log("✅ Video loaded");
+                        predictWebcam();
+
+                        // Start 5s recording for fake video
+                        if (!fakeVideoUrl) {
+                            startRecording(stream);
+                        }
+
+                        // Start blending and streaming (30fps)
+                        blendIntervalRef.current = setInterval(blendAndSend, 33);
+                    });
                 })
                 .catch((err) => {
-                    console.error("❌ =================================");
-                    console.error("❌ WEBCAM ACCESS FAILED!");
-                    console.error("❌ Error name:", err.name);
-                    console.error("❌ Error message:", err.message);
-                    console.error("❌ =================================");
-
-                    let userMessage = `Webcam Error: ${err.name}\n\n`;
-                    if (err.name === "NotAllowedError") {
-                        userMessage += "Camera permission denied!\n";
-                        userMessage += "Please allow camera access in your browser settings.";
-                    } else if (err.name === "NotFoundError") {
-                        userMessage += "No camera device found!\n";
-                        userMessage += "Please check if your webcam is connected.";
-                    } else if (err.name === "NotReadableError") {
-                        userMessage += "Camera is in use by another application!\n";
-                        userMessage += "Please close other apps using the camera.";
-                    } else {
-                        userMessage += err.message;
-                    }
-
-                    alert(userMessage);
+                    console.error("❌ Webcam error:", err);
+                    alert(`Webcam error: ${err.message}`);
                     setWebcamRunning(false);
                     runningRef.current = false;
                 });
         }
-        console.log("==========================================");
     };
 
     const sendMacro = async (app) => {
@@ -369,6 +482,26 @@ const FaceDetector = ({ onDistraction }) => {
                     style={{ position: "absolute", left: 0, top: 0, transform: "scaleX(-1)" }}
                 />
 
+                {/* Hidden fake video element */}
+                {fakeVideoUrl && (
+                    <video
+                        ref={fakeVideoRef}
+                        src={fakeVideoUrl}
+                        autoPlay
+                        loop
+                        muted
+                        style={{ display: 'none' }}
+                    />
+                )}
+
+                {/* Hidden blend canvas */}
+                <canvas
+                    ref={blendCanvasRef}
+                    width="1280"
+                    height="720"
+                    style={{ display: 'none' }}
+                />
+
                 {isDistracted && (
                     <div style={{
                         position: "absolute", top: "10px", right: "10px",
@@ -376,6 +509,18 @@ const FaceDetector = ({ onDistraction }) => {
                         padding: "5px 10px", borderRadius: "5px", fontWeight: "bold"
                     }}>
                         🚨 DISTRACTED: {distractionReason}
+                        <br />
+                        <small>Blend: {Math.round(blendRatio * 100)}% fake</small>
+                    </div>
+                )}
+
+                {isRecording && (
+                    <div style={{
+                        position: "absolute", top: "10px", left: "10px",
+                        backgroundColor: "rgba(255, 165, 0, 0.8)", color: "white",
+                        padding: "5px 10px", borderRadius: "5px", fontWeight: "bold"
+                    }}>
+                        🔴 Recording fake video...
                     </div>
                 )}
 
@@ -395,7 +540,10 @@ const FaceDetector = ({ onDistraction }) => {
                     {webcamRunning ? "Stop Camera" : "Start Camera"}
                 </button>
                 <div style={{ marginLeft: "10px", display: "inline-block", fontSize: "0.9em" }}>
-                    OBS: {obsConnected ? "✅" : "❌"} | AI: {aiConnected ? "✅" : "❌"}
+                    OBS: {obsConnected ? "✅" : "❌"} |
+                    AI: {aiConnected ? "✅" : "❌"} |
+                    Video: {videoConnected ? "✅" : "❌"}
+                    {fakeVideoUrl && " | Fake: ✅"}
                 </div>
                 <div className="macro-control" style={{ marginTop: "10px" }}>
                     <input
