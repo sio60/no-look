@@ -1,6 +1,5 @@
 # ai/engine.py
 import os
-import sys
 import time
 import threading
 from typing import Any, Dict, Optional
@@ -13,7 +12,7 @@ from bridge import VirtualCam
 from bot import MeetingBot
 from rolling_recorder import RollingRecorder
 
-
+import  sys
 class NoLookEngine:
     """
     - 웹캠 점유(OpenCV)
@@ -83,6 +82,7 @@ class NoLookEngine:
             "timestamp": time.time(),
             "reaction": None,
             "notice": None,
+
             "warmingUp": True,
             "warmupTotalSec": self.warmup_seconds,
             "warmupRemainingSec": self.warmup_seconds,
@@ -169,6 +169,7 @@ class NoLookEngine:
 
         self.bridge = VirtualCam(width, height, fps=fps)
 
+        # ✅ rolling recorder 준비
         self.rolling = RollingRecorder(
             out_dir=self.rolling_dir,
             width=width,
