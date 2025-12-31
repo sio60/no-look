@@ -1,5 +1,6 @@
 # ai/engine.py
 import os
+import sys
 import time
 import threading
 from typing import Any, Dict, Optional
@@ -12,14 +13,14 @@ from bridge import VirtualCam
 from bot import MeetingBot
 from rolling_recorder import RollingRecorder
 
-import  sys
+
 class NoLookEngine:
     """
     - 웹캠 점유(OpenCV)
-    - 처음 warmup_seconds 동안은 "녹화만" 하고 추적(디텍터) OFF
-    - 그 다음부터 디텍터 ON
-    - REAL 상태에서는 최근 rolling_seconds 만큼 롤링 저장
-    - 딴짓 감지되면 롤링 버퍼(가장 오래된 seg부터) 재생 → 훨씬 자연스러운 FAKE
+    - warmup_seconds 동안은 "녹화만" 하고 추적 OFF
+    - 이후 디텍터 ON
+    - REAL에서는 rolling_seconds 만큼 롤링 저장
+    - FAKE로 전환되면 롤링 버퍼를 재생(딜레이 영상)
     """
 
     def __init__(
@@ -28,9 +29,11 @@ class NoLookEngine:
         fake_video_path: Optional[str] = None,
         transition_time: float = 0.5,
         fps_limit: Optional[float] = None,
-        warmup_seconds: int = 120,
-        rolling_seconds: int = 120,
-        rolling_segment_seconds: int = 10,
+
+        # ✅ 빠른 테스트 세팅
+        warmup_seconds: int = 5,          # ✅ 5초
+        rolling_seconds: int = 10,        # ✅ 10초 버퍼
+        rolling_segment_seconds: int = 2, # ✅ 2초 단위로 자름
     ):
         self.webcam_id = webcam_id
         self.transition_time = float(transition_time)
@@ -48,7 +51,7 @@ class NoLookEngine:
         self.rolling_segment_seconds = int(rolling_segment_seconds)
 
         self.detector = DistractionDetector()
-        self.generator = StreamGenerator(self.fake_video_path)
+        self.generator = StreamGenerator(self.fake_video_path)  # fallback 영상
         self.bot = MeetingBot()
 
         self._thread: Optional[threading.Thread] = None
@@ -68,6 +71,7 @@ class NoLookEngine:
 
         self.last_fake_frame = None
 
+        # warmup
         self._warmup_start = time.time()
         self._warmup_end = self._warmup_start + self.warmup_seconds
         self._warming_up = True
@@ -82,7 +86,6 @@ class NoLookEngine:
             "timestamp": time.time(),
             "reaction": None,
             "notice": None,
-
             "warmingUp": True,
             "warmupTotalSec": self.warmup_seconds,
             "warmupRemainingSec": self.warmup_seconds,
@@ -146,17 +149,11 @@ class NoLookEngine:
                 pass
             self.bridge = None
 
-    # ---------- internal loop ----------
+    # ---------- internal ----------
     def _open_capture(self) -> cv2.VideoCapture:
-        # macOS: AVFoundation이 안정적인 편
         if sys.platform == "darwin":
-            cap = cv2.VideoCapture(self.webcam_id, cv2.CAP_AVFOUNDATION)
-        # Windows: 필요하면 DSHOW가 더 안정적일 때가 있음(원하면 바꿔)
-        elif sys.platform.startswith("win"):
-            cap = cv2.VideoCapture(self.webcam_id)
-        else:
-            cap = cv2.VideoCapture(self.webcam_id)
-        return cap
+            return cv2.VideoCapture(self.webcam_id, cv2.CAP_AVFOUNDATION)
+        return cv2.VideoCapture(self.webcam_id)
 
     def _run(self) -> None:
         self.cap = self._open_capture()
@@ -169,7 +166,6 @@ class NoLookEngine:
 
         self.bridge = VirtualCam(width, height, fps=fps)
 
-        # ✅ rolling recorder 준비
         self.rolling = RollingRecorder(
             out_dir=self.rolling_dir,
             width=width,
@@ -189,7 +185,7 @@ class NoLookEngine:
 
             now = time.time()
 
-            # ✅ warmup 동안은 추적 OFF + 롤링 저장만
+            # ✅ warmup: 추적 OFF + 롤링 저장만
             notice = None
             if self._warming_up:
                 remaining = max(0, int(self._warmup_end - now))
@@ -199,7 +195,7 @@ class NoLookEngine:
 
                 if now >= self._warmup_end:
                     self._warming_up = False
-                    notice = "✅ 2분 녹화 완료! 이제 추적 시작합니다."
+                    notice = "✅ 5초 녹화 완료! 이제 추적 시작합니다."
 
                 if self.bridge is not None:
                     self.bridge.send(real_frame)
@@ -228,7 +224,7 @@ class NoLookEngine:
                     last_frame_time = time.time()
                 continue
 
-            # ✅ warmup 끝난 뒤부터 추적 ON
+            # ✅ 추적 ON
             is_distracted, reasons = self.detector.is_distracted(real_frame)
 
             with self._lock:
@@ -249,7 +245,6 @@ class NoLookEngine:
 
                     if self.mode == "FAKE" and self.rolling is not None:
                         self.rolling.start_playback()
-
                     if self.mode == "REAL" and self.rolling is not None:
                         self.rolling.stop_playback()
 
@@ -257,13 +252,13 @@ class NoLookEngine:
                 progress = min(elapsed / self.transition_time, 1.0)
                 ratio = progress if self.mode == "FAKE" else (1.0 - progress)
 
-            # ✅ REAL 모드에서는 롤링 계속 저장
+            # ✅ REAL이면 롤링 계속 저장
             if self.rolling is not None:
                 self.rolling.set_recording_enabled(self.mode == "REAL")
                 if self.mode == "REAL":
                     self.rolling.update(real_frame, now)
 
-            # FAKE 프레임 생성
+            # ✅ FAKE 프레임 생성
             if self.mode == "FAKE":
                 fake_frame = None
 
