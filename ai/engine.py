@@ -12,6 +12,7 @@ from generator import StreamGenerator
 from bridge import VirtualCam
 from bot import MeetingBot
 from rolling_recorder import RollingRecorder
+from scene_transition import TransitionManager
 
 
 class NoLookEngine:
@@ -51,7 +52,8 @@ class NoLookEngine:
         self.rolling_segment_seconds = int(rolling_segment_seconds)
 
         self.detector = DistractionDetector()
-        self.generator = StreamGenerator(self.fake_video_path)  # fallback 영상
+        self.generator = StreamGenerator(self.fake_video_path)
+        self.transition_manager = TransitionManager(base_dir)
         self.bot = MeetingBot()
 
         self._thread: Optional[threading.Thread] = None
@@ -71,7 +73,8 @@ class NoLookEngine:
 
         self.last_fake_frame = None
 
-        # warmup
+        self.transition_effect = "blackout" # Default effect
+
         self._warmup_start = time.time()
         self._warmup_end = self._warmup_start + self.warmup_seconds
         self._warming_up = True
@@ -99,6 +102,10 @@ class NoLookEngine:
     def set_force_real(self, value: bool) -> None:
         with self._lock:
             self.force_real = bool(value)
+
+    def set_transition_effect(self, effect_name: str) -> None:
+        with self._lock:
+            self.transition_effect = effect_name
             if self.force_real and self.mode != "REAL":
                 self.mode = "REAL"
                 self.trans_start = time.time()
@@ -243,10 +250,21 @@ class NoLookEngine:
                     self.mode = target_mode
                     self.trans_start = time.time()
 
-                    if self.mode == "FAKE" and self.rolling is not None:
-                        self.rolling.start_playback()
-                    if self.mode == "REAL" and self.rolling is not None:
-                        self.rolling.stop_playback()
+                if mode_changed:
+                    self.mode = target_mode
+                    self.trans_start = time.time()
+
+                    # FAKE 전환 시 이펙트 시작
+                    if self.mode == "FAKE":
+                        # 프론트엔드에서 설정한 이펙트값 사용
+                        self.transition_manager.start(effect_name=self.transition_effect)
+                        if self.rolling is not None:
+                            self.rolling.start_playback()
+
+                    if self.mode == "REAL":
+                        self.transition_manager.stop()
+                        if self.rolling is not None:
+                            self.rolling.stop_playback()
 
                 elapsed = time.time() - self.trans_start
                 progress = min(elapsed / self.transition_time, 1.0)
@@ -281,6 +299,13 @@ class NoLookEngine:
                     self.last_fake_frame = fake_frame
 
                 output_frame = self.generator.blend_frames(real_frame, fake_frame, ratio)
+
+                # [Scene Transition Override]
+                # 이펙트가 진행 중이면, 계산된 output_frame 대신 이펙트 프레임을 전송
+                # 이 때, Fade-In 효과를 위해 fake_frame(target_frame)도 함께 전달
+                effect_frame = self.transition_manager.get_frame(real_frame, target_frame=fake_frame)
+                if effect_frame is not None:
+                    output_frame = effect_frame
             else:
                 output_frame = real_frame
 
@@ -294,6 +319,7 @@ class NoLookEngine:
                     "lockedFake": bool(self.locked_fake),
                     "pauseFake": bool(self.pause_fake_playback),
                     "forceReal": bool(self.force_real),
+                    "transitionEffect": self.transition_effect,
                     "reasons": list(reasons),
                     "timestamp": now,
                     "reaction": reaction,
