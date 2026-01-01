@@ -1,165 +1,289 @@
-# ai/server.py
-import asyncio
-from typing import Set
-import uvicorn
+# engine_server.py
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from obs_controller import OBSController
-
-
-from engine import NoLookEngine
-
-
+import asyncio
+import time
+import json
 
 app = FastAPI()
 
+# ✅ 개발 중엔 일단 전부 허용 (나중에 origin 제한)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 모든 출처 허용 (개발용)
+    allow_origins=[
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+],
     allow_credentials=True,
-    allow_methods=["*"],  # 모든 메소드 허용 (GET, POST, OPTIONS 등)
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
-engine = NoLookEngine(webcam_id=0, transition_time=0.5, fps_limit=30.0)
+# -----------------------------
+# 상태 (최소)
+# -----------------------------
+STATE = {
+    "mode": "REAL",            # REAL | FAKE | XFADING
+    "ratio": 0.0,              # 0~1
+    "lockedFake": False,
+    "pauseFake": False,
+    "forceReal": False,
+    "reasons": [],
+    "warmingUp": False,
+    "warmupTotalSec": 120,
+    "warmupRemainingSec": 0,
+    "transition": "blackout",
+    "reaction": None,
+    "notice": None,
+}
 
-clients: Set[WebSocket] = set()
+def now_ts():
+    return time.time()
 
+# -----------------------------
+# WS: /ws/state (브로드캐스트)
+# -----------------------------
+class WSManager:
+    def __init__(self):
+        self.clients: set[WebSocket] = set()
 
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        self.clients.add(ws)
+        await self.send(ws, STATE)
+
+    def disconnect(self, ws: WebSocket):
+        self.clients.discard(ws)
+
+    async def send(self, ws: WebSocket, data: dict):
+        await ws.send_json(data)
+
+    async def broadcast(self, data: dict):
+        dead = []
+        for c in list(self.clients):
+            try:
+                await c.send_json(data)
+            except Exception:
+                dead.append(c)
+        for c in dead:
+            self.disconnect(c)
+
+ws_manager = WSManager()
+
+async def push_state():
+    await ws_manager.broadcast(STATE)
+
+@app.websocket("/ws/state")
+async def ws_state(ws: WebSocket):
+    await ws_manager.connect(ws)
+    try:
+        while True:
+            msg = await ws.receive_text()
+            # ping 처리(프론트 wsClient가 ping 보냄)
+            if msg == "ping":
+                await ws.send_text("pong")
+    except WebSocketDisconnect:
+        ws_manager.disconnect(ws)
+
+# -----------------------------
+# REST: /state
+# -----------------------------
+@app.get("/state")
+async def get_state():
+    return STATE
+
+# -----------------------------
+# Control APIs
+# -----------------------------
 class BoolPayload(BaseModel):
     value: bool
 
-
-class StringPayload(BaseModel):
+class StrPayload(BaseModel):
     value: str
 
-obs = OBSController()
-obs.connect()
+@app.post("/control/pause_fake")
+async def pause_fake(p: BoolPayload):
+    STATE["pauseFake"] = p.value
+    await push_state()
+    return {"ok": True, "pauseFake": STATE["pauseFake"]}
 
-@app.post("/control/scene")
-async def change_scene(payload: dict):
-    obs.switch_scene(payload["scene"])
+@app.post("/control/force_real")
+async def force_real(p: BoolPayload):
+    STATE["forceReal"] = p.value
+    # forceReal이면 REAL로 강제한다고 가정(필요시 너 엔진 로직에 연결)
+    if p.value:
+        STATE["mode"] = "REAL"
+        STATE["ratio"] = 0.0
+    await push_state()
+    return {"ok": True, "forceReal": STATE["forceReal"]}
+
+@app.post("/control/reset_lock")
+async def reset_lock():
+    STATE["lockedFake"] = False
+    STATE["reasons"] = []
+    STATE["notice"] = "락 초기화 완료"
+    await push_state()
+    # notice는 한번만 쓰는게 보통이라 바로 비움(원하면 유지)
+    STATE["notice"] = None
     return {"ok": True}
 
+@app.post("/control/transition")
+async def set_transition(p: StrPayload):
+    STATE["transition"] = p.value
+    await push_state()
+    return {"ok": True, "transition": STATE["transition"]}
+
+# -----------------------------
+# Trigger API (FaceDetector → Engine)
+# -----------------------------
+class TriggerPayload(BaseModel):
+    distracted: bool
+    reason: str | None = None
+    ts: float | None = None
 
 
-@app.on_event("startup")
-async def startup():
-    engine.start()
-    asyncio.create_task(broadcast_state_loop())
+@app.post("/trigger")
+async def trigger_event(p: TriggerPayload):
+    """
+    FaceDetector에서 딴짓 감지 시 호출됨
+    """
+    if p.distracted:
+        STATE["mode"] = "FAKE"
+        STATE["lockedFake"] = True
+        STATE["reasons"] = [p.reason] if p.reason else []
+        STATE["notice"] = "딴짓 감지됨"
+    else:
+        STATE["mode"] = "REAL"
+        STATE["lockedFake"] = False
+        STATE["reasons"] = []
+        STATE["notice"] = "집중 상태 복귀"
 
+    await push_state()
 
-@app.on_event("shutdown")
-async def shutdown():
-    engine.stop()
+    # notice는 일회성
+    STATE["notice"] = None
+
+    return {
+        "ok": True,
+        "mode": STATE["mode"],
+        "reason": p.reason,
+        "ts": p.ts,
+    }
+    
+# -----------------------------
+# WS: /ws/ai (AI 채널)
+# -----------------------------
+class AIWSManager:
+    def __init__(self):
+        self.clients: set[WebSocket] = set()
+
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        self.clients.add(ws)
+        # 연결 즉시 hello + 현재 상태(선택)
+        await ws.send_json({
+            "type": "hello",
+            "ok": True,
+            "server": "engine_server",
+            "state": STATE,
+        })
+
+    def disconnect(self, ws: WebSocket):
+        self.clients.discard(ws)
+
+    async def send(self, ws: WebSocket, data: dict):
+        await ws.send_json(data)
+
+    async def broadcast(self, data: dict):
+        dead = []
+        for c in list(self.clients):
+            try:
+                await c.send_json(data)
+            except Exception:
+                dead.append(c)
+        for c in dead:
+            self.disconnect(c)
+
+ai_ws_manager = AIWSManager()
+
+def _set_reaction(text: str):
+    """
+    프론트가 STT/상황을 보내면
+    대시보드에 토스트로 뜨게 reaction을 STATE에 넣고 ws/state로 push
+    """
+    STATE["reaction"] = text
+
+async def _push_reaction_once(text: str):
+    _set_reaction(text)
+    await push_state()
+    # reaction은 1회성으로 쓰고 지우는게 UX 좋음
+    STATE["reaction"] = None
 
 @app.websocket("/ws/ai")
-async def ai_service(websocket: WebSocket):
-    """
-    AI Service WebSocket
-    Handles:
-    - Bot reactions (OpenAI)
-    - AI suggestions (Gemini)
-    """
-    await websocket.accept()
-    print("🔗 Frontend connected to AI service")
-    
+async def ws_ai(ws: WebSocket):
+    await ai_ws_manager.connect(ws)
+
     try:
         while True:
-            data = await websocket.receive_json()
-            message_type = data.get("type")
-            
-            # OpenAI Bot Reaction
-            if message_type == "reaction_request":
-                print("🤖 Generating bot reaction...")
-                reaction = meeting_bot.get_reaction()
-                await websocket.send_json({
+            text = await ws.receive_text()   # ✅ 프론트는 항상 text로 보냄
+            if text == "ping":
+                await ws.send_text("pong")
+                continue
+
+            # ✅ JSON 문자열이면 파싱 시도
+            data = None
+            try:
+                data = json.loads(text)
+            except Exception:
+                # JSON이 아니면 그냥 echo ack
+                await ai_ws_manager.send(ws, {"type": "ack", "ok": True, "echo": text})
+                continue
+
+            mtype = data.get("type")
+
+            # ✅ FaceDetector가 보내는 딴짓 reaction 요청
+            if mtype == "reaction_request":
+                reaction = "집중이 필요해 보여요 👀"
+                await ai_ws_manager.send(ws, {
                     "type": "reaction",
-                    "text": reaction
+                    "ok": True,
+                    "reaction": reaction,
                 })
-                print(f"✅ Sent reaction: {reaction}")
-            
-            # Gemini AI Suggestion
-            elif message_type == "suggestion_request":
-                transcript = data.get("transcript", "")
-                print(f"🤖 Generating AI suggestion for: {transcript[:50]}...")
-                suggestion = macro_bot.get_suggestion(transcript)
-                await websocket.send_json({
-                    "type": "suggestion",
-                    "text": suggestion
-                })
-                print(f"✅ Sent suggestion: {suggestion}")
-            
-            else:
-                print(f"⚠️ Unknown message type: {message_type}")
-                
-    except WebSocketDisconnect:
-        print("❌ Frontend disconnected from AI service")
+                await _push_reaction_once(reaction)
+                continue
 
+            # ✅ ping (json)
+            if mtype == "ping":
+                await ai_ws_manager.send(ws, {"type": "pong"})
+                continue
 
-@app.websocket("/ws/state")
-async def ws_state(websocket: WebSocket):
-    await websocket.accept()
-    clients.add(websocket)
-    try:
-        # 연결 직후 현재 상태 1회 푸시
-        await websocket.send_json(engine.get_state())
-        while True:
-            # 프론트가 ping 보내도 되고 안 보내도 됨
-            await websocket.receive_text()
+            # ✅ STT transcript
+            if mtype in ("transcript", "stt", "utterance"):
+                t = (data.get("text") or "").strip()
+                if t:
+                    reaction = f"말씀 요약: {t[:60]}" if len(t) <= 60 else f"말씀 요약: {t[:60]}..."
+                    await ai_ws_manager.send(ws, {"type": "reaction", "ok": True, "reaction": reaction})
+                    await _push_reaction_once(reaction)
+                else:
+                    await ai_ws_manager.send(ws, {"type": "reaction", "ok": False, "error": "empty_text"})
+                continue
+
+            # ✅ event
+            if mtype == "event":
+                name = data.get("name") or "unknown"
+                reasons = data.get("reasons") or []
+                STATE["reasons"] = reasons if isinstance(reasons, list) else [str(reasons)]
+                STATE["notice"] = f"이벤트 수신: {name}"
+                await push_state()
+                STATE["notice"] = None
+                await ai_ws_manager.send(ws, {"type": "event_ack", "ok": True, "name": name})
+                continue
+
+            # ✅ default ack
+            await ai_ws_manager.send(ws, {"type": "ack", "ok": True, "received": data})
+
     except WebSocketDisconnect:
         pass
     finally:
-        clients.discard(websocket)
-
-
-async def broadcast_state_loop():
-    """
-    상태를 주기적으로 모든 클라이언트에 push.
-    프론트는 mode/ratio/lockedFake/reasons만 써도 OK.
-    """
-    while True:
-        state = engine.get_state()
-        dead = []
-        for ws in list(clients):
-            try:
-                await ws.send_json(state)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            clients.discard(ws)
-        await asyncio.sleep(0.05)  # 20fps
-
-
-# ---------- HTTP Controls ----------
-@app.post("/control/pause_fake")
-def pause_fake(payload: BoolPayload):
-    engine.set_pause_fake(payload.value)
-    return {"ok": True, "pauseFake": payload.value}
-
-
-@app.post("/control/force_real")
-def force_real(payload: BoolPayload):
-    engine.set_force_real(payload.value)
-    return {"ok": True, "forceReal": payload.value}
-
-
-@app.post("/control/transition")
-def set_transition(payload: StringPayload):
-    engine.set_transition_effect(payload.value)
-    return {"ok": True, "transitionEffect": payload.value}
-
-
-@app.post("/control/reset_lock")
-def reset_lock():
-    engine.reset_lock()
-    return {"ok": True, "lockedFake": False}
-
-
-@app.get("/state")
-def get_state():
-    return engine.get_state()
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+        ai_ws_manager.disconnect(ws)

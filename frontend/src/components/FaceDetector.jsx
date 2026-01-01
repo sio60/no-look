@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { FaceLandmarker, HandLandmarker, FilesetResolver, DrawingUtils } from "@mediapipe/tasks-vision";
 import OBSWebSocket from "obs-websocket-js";
+import { sendTriggerEvent } from "../lib/api";
 import "./FaceDetector.css";
 
 const REAL_SCENE = "REAL";
@@ -179,86 +180,61 @@ const FaceDetector = ({ onDistraction }) => {
         // onDistraction 콜백 필요하면 여기서 호출
         onDistraction?.(isDistracted);
 
-        // 씬 전환
+        // ✅ 1) OBS 씬 전환
         switchOBSScene(isDistracted ? FAKE_SCENE : REAL_SCENE);
+
+        // ✅ 2) 백엔드로 트리거 이벤트 전송
+        sendTriggerEvent({
+            distracted: isDistracted,
+            reason: distractionReason || null,
+            ts: Date.now() / 1000,
+            // pitch/yaw/confidence를 갖고 있으면 같이 보내면 더 좋음
+        }).catch(() => { });
     }, [isDistracted, obsConnected]);
 
     // 3. AI Backend WebSocket (반응봇)
     const connectAI = () => {
-        const ws = new WebSocket("ws://localhost:8000/ws/ai");
+        if (aiWsRef.current && aiWsRef.current.readyState === WebSocket.OPEN) return;
+
+        const ws = new WebSocket("ws://127.0.0.1:8000/ws/ai");
+        aiWsRef.current = ws;
 
         ws.onopen = () => {
-            console.log("✅ AI Backend Connected");
+            console.log("✅ AI WS open");
             setAiConnected(true);
+            // 서버에 ping 한 번 보내서 응답 확인하고 싶으면:
+            ws.send(JSON.stringify({ type: "ping" }));
         };
 
-        ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            if (data.type === "reaction") {
-                setBotReaction(data.text);
-                setTimeout(() => setBotReaction(null), 5000);
+        ws.onmessage = (e) => {
+            try {
+                const data = JSON.parse(e.data);
+                // 서버 hello 받으면 연결 확정
+                if (data.type === "hello") {
+                    console.log("✅ AI hello:", data);
+                    setAiConnected(true);
+                    return;
+                }
+                if (data.type === "reaction") {
+                    setBotReaction(data.reaction);
+                    setTimeout(() => setBotReaction(null), 5000);
+                }
+            } catch {
+                // 텍스트 pong 같은거는 무시 가능
             }
         };
 
-        ws.onerror = (error) => {
-            console.error("❌ AI Backend Error:", error);
+        ws.onerror = (err) => {
+            console.error("❌ AI WS error", err);
             setAiConnected(false);
         };
 
         ws.onclose = () => {
-            console.log("❌ AI Backend Disconnected");
+            console.log("❌ AI WS close");
             setAiConnected(false);
-            setTimeout(connectAI, 3000);
+            // 필요하면 재연결
+            setTimeout(connectAI, 1500);
         };
-
-        aiWsRef.current = ws;
-    };
-
-    // 4. Request AI reaction when distracted
-    useEffect(() => {
-        if (isDistracted && aiWsRef.current?.readyState === WebSocket.OPEN) {
-            aiWsRef.current.send(
-                JSON.stringify({ type: "reaction_request", isDistracted: true })
-            );
-        }
-    }, [isDistracted]);
-
-    // 5. Smooth blend transition animation (UI 표시용)
-    useEffect(() => {
-        const targetRatio = isDistracted ? 1 : 0;
-        const duration = 500;
-        const steps = 15;
-        const increment = (targetRatio - blendRatio) / steps;
-
-        let currentStep = 0;
-        const id = setInterval(() => {
-            currentStep++;
-            setBlendRatio((prev) => {
-                const next = prev + increment;
-                return Math.max(0, Math.min(1, next));
-            });
-            if (currentStep >= steps) clearInterval(id);
-        }, duration / steps);
-
-        return () => clearInterval(id);
-    }, [isDistracted]);
-
-    // Helper: EAR
-    const calculateEAR = (landmarks) => {
-        const dist = (p1, p2) =>
-            Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2);
-
-        const left = [[33, 133], [160, 144], [158, 153]];
-        const right = [[362, 263], [385, 380], [387, 373]];
-
-        const eyeRatio = (idx) => {
-            const h = dist(landmarks[idx[0][0]], landmarks[idx[0][1]]);
-            const v1 = dist(landmarks[idx[1][0]], landmarks[idx[1][1]]);
-            const v2 = dist(landmarks[idx[2][0]], landmarks[idx[2][1]]);
-            return (v1 + v2) / (2 * h);
-        };
-
-        return (eyeRatio(left) + eyeRatio(right)) / 2;
     };
 
     // (선택) startRecording은 유지 가능(프론트 내 fake 테스트용)
@@ -375,63 +351,90 @@ const FaceDetector = ({ onDistraction }) => {
         if (runningRef.current) requestRef.current = requestAnimationFrame(predictWebcam);
     };
 
-    // Camera Toggle (프론트에서 얼굴인식만 함)
-    const enableCam = () => {
+    // Camera Toggle (OBS Virtual Camera 우선)
+    const enableCam = async () => {
         if (!faceLandmarker || !handLandmarker) {
             alert("Please wait for MediaPipe models to load...");
             return;
         }
 
+        // STOP
         if (webcamRunning) {
             setWebcamRunning(false);
             runningRef.current = false;
             setIsDistracted(false);
             if (requestRef.current) cancelAnimationFrame(requestRef.current);
 
-            if (videoRef.current?.srcObject) {
-                videoRef.current.srcObject.getTracks().forEach((t) => t.stop());
+            const stream = videoRef.current?.srcObject;
+            if (stream) {
+                stream.getTracks().forEach((t) => t.stop());
                 videoRef.current.srcObject = null;
             }
             return;
         }
 
+        // START
         setWebcamRunning(true);
         runningRef.current = true;
         setIsDistracted(false);
 
-        navigator.mediaDevices.enumerateDevices()
-            .then((devices) => {
-                const videoDevices = devices.filter((d) => d.kind === "videoinput");
-                const realWebcams = videoDevices.filter((d) => {
-                    const label = (d.label || "").toLowerCase();
-                    return !label.includes("obs") && !label.includes("virtual");
-                });
-                const selected = realWebcams[0] || videoDevices[0];
+        try {
+            // ✅ 0) 권한 먼저 획득해서 device label 채우기 (중요!)
+            const tmp = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+            tmp.getTracks().forEach((t) => t.stop());
 
-                return {
-                    video: {
-                        deviceId: selected?.deviceId ? { exact: selected.deviceId } : undefined,
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 },
-                    },
-                };
-            })
-            .then((constraints) => navigator.mediaDevices.getUserMedia(constraints))
-            .then((stream) => {
-                videoRef.current.srcObject = stream;
-                videoRef.current.addEventListener("loadeddata", () => {
+            // ✅ 1) 장치 나열
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoDevices = devices.filter((d) => d.kind === "videoinput");
+
+            // ✅ 2) OBS/Virtual 우선 선택
+            const obsCam =
+                videoDevices.find((d) => (d.label || "").toLowerCase().includes("obs")) ||
+                videoDevices.find((d) => (d.label || "").toLowerCase().includes("virtual"));
+
+            // ✅ 3) 없으면 일반 웹캠 fallback
+            const realCam = videoDevices.find((d) => {
+                const label = (d.label || "").toLowerCase();
+                return !label.includes("obs") && !label.includes("virtual");
+            });
+
+            const selected = obsCam || realCam || videoDevices[0];
+
+            if (!selected) throw new Error("No video input device found");
+
+            console.log("🎥 Selected camera:", selected.label || selected.deviceId);
+
+            // ✅ 4) 선택한 카메라로 스트림 시작
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    deviceId: selected.deviceId ? { exact: selected.deviceId } : undefined,
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                },
+                audio: false,
+            });
+
+            videoRef.current.srcObject = stream;
+
+            // loadeddata 중복 방지: once 옵션 사용
+            videoRef.current.addEventListener(
+                "loadeddata",
+                () => {
                     predictWebcam();
 
-                    // (선택) fake 테스트용 5초 녹화
-                    if (!fakeVideoUrl) startRecording(stream);
-                });
-            })
-            .catch((err) => {
-                alert(`Webcam error: ${err.message}`);
-                setWebcamRunning(false);
-                runningRef.current = false;
-            });
+                    // ⚠️ OBS 가상카메라 스트림에 fake 녹화는 의미가 없고 충돌 가능성만 올림
+                    // 필요하면 아래 주석 해제
+                    // if (!fakeVideoUrl) startRecording(stream);
+                },
+                { once: true }
+            );
+        } catch (err) {
+            alert(`Webcam error: ${err.message}`);
+            setWebcamRunning(false);
+            runningRef.current = false;
+        }
     };
+
 
     const sendMacro = async (app) => {
         try {

@@ -1,3 +1,4 @@
+// src/pages/Dashboard.jsx
 import { useEffect, useState, useCallback, useRef } from 'react';
 import VideoPreview from '../components/VideoPreview';
 import SttPanel from '../components/SttPanel';
@@ -6,7 +7,7 @@ import Toast, { useToast } from '../components/Toast';
 import '../styles/dashboard.css';
 
 import { wsClient } from '../lib/wsClient';
-import { setPauseFake, setForceReal, resetLock, fetchEngineState } from '../lib/api';
+import { setPauseFake, setForceReal, resetLock, fetchEngineState, setTransitionEffect } from '../lib/api';
 
 export default function Dashboard() {
     const { toasts, addToast, removeToast } = useToast();
@@ -18,12 +19,13 @@ export default function Dashboard() {
     const [forceReal, setForceRealState] = useState(false);
     const [reasons, setReasons] = useState([]);
 
-    // ✅ warmup UI
+    // warmup UI
     const [warmingUp, setWarmingUp] = useState(false);
-    const [warmupTotalSec, setWarmupTotalSec] = useState(120);      // ✅ 2분
+    const [warmupTotalSec, setWarmupTotalSec] = useState(120);
     const [warmupRemainingSec, setWarmupRemainingSec] = useState(0);
 
     const prevWarmingUpRef = useRef(false);
+    const mountedRef = useRef(false);
 
     const mmss = (sec) => {
         const s = Math.max(0, Number(sec || 0));
@@ -32,48 +34,41 @@ export default function Dashboard() {
         return `${m}:${r}`;
     };
 
-    useEffect(() => {
-        fetchEngineState()
-            .then((s) => {
-                setMode(s.mode ?? 'REAL');
-                setRatio(s.ratio ?? 0);
-                setLockedFake(!!s.lockedFake);
-                setPauseFakeState(!!s.pauseFake);
-                setForceRealState(!!s.forceReal);
-                setReasons(s.reasons ?? []);
+    const applyState = useCallback((s) => {
+        if (!s) return;
+        setMode(s.mode ?? 'REAL');
+        setRatio(Number(s.ratio ?? 0));
+        setLockedFake(!!s.lockedFake);
+        setPauseFakeState(!!s.pauseFake);
+        setForceRealState(!!s.forceReal);
+        setReasons(s.reasons ?? []);
 
-                setWarmingUp(!!s.warmingUp);
-                setWarmupTotalSec(s.warmupTotalSec ?? 120);
-                setWarmupRemainingSec(s.warmupRemainingSec ?? 0);
-            })
-            .catch(() => { });
+        setWarmingUp(!!s.warmingUp);
+        setWarmupTotalSec(Number(s.warmupTotalSec ?? 120));
+        setWarmupRemainingSec(Number(s.warmupRemainingSec ?? 0));
+
+        if (s.reaction) addToast(`🤖 ${s.reaction}`, 'success');
+        if (s.notice) addToast(s.notice, 'success');
+
+        const prev = prevWarmingUpRef.current;
+        if (prev && !s.warmingUp) addToast('✅ 녹화 완료!', 'success');
+        prevWarmingUpRef.current = !!s.warmingUp;
+    }, [addToast]);
+
+    useEffect(() => {
+        // React StrictMode에서 mount/unmount 2번 도는 경우 WS 2번 붙는걸 방지
+        if (mountedRef.current) return;
+        mountedRef.current = true;
+
+        fetchEngineState()
+            .then(applyState)
+            .catch((e) => {
+                console.warn("[Dashboard] fetchEngineState failed:", e);
+                addToast('⚠️ /state 연결 실패 (백엔드 라우트 확인)', 'error');
+            });
 
         wsClient.onMessage = (s) => {
-            if (!s) return;
-
-            setMode(s.mode ?? 'REAL');
-            setRatio(s.ratio ?? 0);
-            setLockedFake(!!s.lockedFake);
-            setPauseFakeState(!!s.pauseFake);
-            setForceRealState(!!s.forceReal);
-            setReasons(s.reasons ?? []);
-
-            setWarmingUp(!!s.warmingUp);
-            setWarmupTotalSec(s.warmupTotalSec ?? 120);
-            setWarmupRemainingSec(s.warmupRemainingSec ?? 0);
-
-            // 락 처음 걸릴 때 reaction 오면 토스트
-            if (s.reaction) addToast(`🤖 ${s.reaction}`, 'success');
-
-            // ✅ warmup 완료 공지(백엔드 notice)
-            if (s.notice) addToast(s.notice, 'success');
-
-            // ✅ 혹시 notice 못 받아도 "warmingUp true -> false"로 완료 토스트
-            const prev = prevWarmingUpRef.current;
-            if (prev && !s.warmingUp) {
-                addToast('✅ 녹화 완료!', 'success');
-            }
-            prevWarmingUpRef.current = !!s.warmingUp;
+            applyState(s);
         };
 
         wsClient.connect();
@@ -82,30 +77,68 @@ export default function Dashboard() {
             wsClient.disconnect();
             wsClient.onMessage = null;
         };
-    }, [addToast]);
+    }, [applyState, addToast]);
 
     const togglePauseFake = useCallback(async () => {
         const next = !pauseFake;
-        const res = await setPauseFake(next);
-        if (res.ok) addToast(`PauseFake: ${next ? 'ON' : 'OFF'}`, 'success');
+        try {
+            const res = await setPauseFake(next);
+            if (res?.ok) {
+                setPauseFakeState(next);
+                addToast(`PauseFake: ${next ? 'ON' : 'OFF'}`, 'success');
+            } else {
+                addToast('PauseFake 실패(응답 ok=false)', 'error');
+            }
+        } catch (e) {
+            console.error(e);
+            addToast('PauseFake 실패(404/서버오류)', 'error');
+        }
     }, [pauseFake, addToast]);
 
     const toggleForceReal = useCallback(async () => {
         const next = !forceReal;
-        const res = await setForceReal(next);
-        if (res.ok) addToast(`ForceREAL: ${next ? 'ON' : 'OFF'}`, 'success');
+        try {
+            const res = await setForceReal(next);
+            if (res?.ok) {
+                setForceRealState(next);
+                addToast(`ForceREAL: ${next ? 'ON' : 'OFF'}`, 'success');
+            } else {
+                addToast('ForceREAL 실패(응답 ok=false)', 'error');
+            }
+        } catch (e) {
+            console.error(e);
+            addToast('ForceREAL 실패(404/서버오류)', 'error');
+        }
     }, [forceReal, addToast]);
 
     const handleResetLock = useCallback(async () => {
-        const res = await resetLock();
-        if (res.ok) addToast('락 초기화 완료', 'success');
+        try {
+            const res = await resetLock();
+            if (res?.ok) addToast('락 초기화 완료', 'success');
+            else addToast('락 초기화 실패(응답 ok=false)', 'error');
+        } catch (e) {
+            console.error(e);
+            addToast('락 초기화 실패(404/서버오류)', 'error');
+        }
     }, [addToast]);
 
-    const progress = warmupTotalSec > 0 ? (warmupTotalSec - warmupRemainingSec) / warmupTotalSec : 0;
+    const handleApplyTransition = useCallback(async (effect) => {
+        try {
+            const res = await setTransitionEffect(effect);
+            if (res?.ok) addToast(`전환 효과 적용: ${effect}`, 'success');
+            else addToast('전환 효과 적용 실패(응답 ok=false)', 'error');
+        } catch (e) {
+            console.error(e);
+            addToast('전환 효과 적용 실패(404/서버오류)', 'error');
+        }
+    }, [addToast]);
+
+    const progress =
+        warmupTotalSec > 0 ? (warmupTotalSec - warmupRemainingSec) / warmupTotalSec : 0;
 
     return (
         <div className="dashboard simple">
-            {/* ✅ Warmup Overlay */}
+            {/* Warmup Overlay */}
             {warmingUp && (
                 <div className="warmup-overlay">
                     <div className="warmup-card">
@@ -113,7 +146,12 @@ export default function Dashboard() {
                         <div className="warmup-desc">{warmupTotalSec}초 동안 가만히 있어주세요</div>
                         <div className="warmup-timer">{mmss(warmupRemainingSec)}</div>
                         <div className="warmup-bar">
-                            <div className="warmup-bar-fill" style={{ width: `${Math.min(100, Math.max(0, progress * 100))}%` }} />
+                            <div
+                                className="warmup-bar-fill"
+                                style={{
+                                    width: `${Math.min(100, Math.max(0, progress * 100))}%`,
+                                }}
+                            />
                         </div>
                         <div className="warmup-sub">녹화가 끝나면 자동으로 추적을 시작해요.</div>
                     </div>
@@ -156,7 +194,7 @@ export default function Dashboard() {
                 </div>
 
                 <div className="transition-section">
-                    <TransitionSelector addToast={addToast} />
+                    <TransitionSelector addToast={addToast} onApply={handleApplyTransition} />
                 </div>
 
                 <div className="stt-section">
@@ -165,6 +203,6 @@ export default function Dashboard() {
             </div>
 
             <Toast toasts={toasts} onRemove={removeToast} />
-        </div >
+        </div>
     );
 }

@@ -13,48 +13,41 @@ export default function VideoPreview({ mode, ratio, addToast }) {
 
     const startWebcam = useCallback(async () => {
         try {
-            let videoConstraints = { width: 320, height: 240 };
+            // 1️⃣ 장치 나열
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const obsCam = devices.find(
+                d =>
+                    d.kind === "videoinput" &&
+                    d.label.toLowerCase().includes("obs")
+            );
 
-            // ✅ macOS에서 Python 백엔드와 충돌 방지를 위해 OBS Virtual Camera 자동 선택
-            // (Windows 등 다른 OS는 navigator.platform 체크로 건너뜀)
-            const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
-            if (isMac) {
-                try {
-                    // 권한 획득용 (이미 있으면 통과)
-                    await navigator.mediaDevices.getUserMedia({ video: true }).then(s => s.getTracks().forEach(t => t.stop()));
-
-                    const devices = await navigator.mediaDevices.enumerateDevices();
-                    const obsCam = devices.find(d =>
-                        d.kind === 'videoinput' && d.label.toLowerCase().includes('obs')
-                    );
-
-                    if (obsCam) {
-                        console.log("[VideoPreview] MacOS detected: Switching to OBS Virtual Camera to avoid conflict.");
-                        videoConstraints.deviceId = { exact: obsCam.deviceId };
-                    }
-                } catch (e) {
-                    console.warn("[VideoPreview] Autodetect camera failed:", e);
-                }
+            if (!obsCam) {
+                throw new Error("OBS Virtual Camera not found");
             }
 
+            // 2️⃣ OBS Virtual Camera만 사용
             const stream = await navigator.mediaDevices.getUserMedia({
-                video: videoConstraints,
+                video: {
+                    deviceId: { exact: obsCam.deviceId },
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                },
+                audio: false,
             });
 
             streamRef.current = stream;
-            if (realVideoRef.current) realVideoRef.current.srcObject = stream;
+            realVideoRef.current.srcObject = stream;
 
             setHasPermission(true);
             setError(null);
         } catch (err) {
-            console.error('Webcam error:', err);
+            console.error("OBS Camera error:", err);
             setHasPermission(false);
-
-            // ⚠️ 여기서 많이 터지는 이유: 파이썬(OpenCV)이 이미 웹캠 점유함
-            setError(`카메라 오류: ${err.name}`);
-            addToast?.('카메라 연결 실패 (AI가 웹캠 점유 중이면 가상카메라로 보세요)', 'error');
+            setError("OBS Virtual Camera 연결 실패");
+            addToast?.("OBS 가상 카메라를 켜주세요", "error");
         }
     }, [addToast]);
+
 
     const stopWebcam = useCallback(() => {
         if (streamRef.current) {

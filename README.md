@@ -9,7 +9,7 @@
 
 ---
 
-## Team & Roles
+## Team & Roles 
 
 ### 1팀: AI & Trigger (AI Part)
 **멤버: 임은상, 변지환, 박성빈**

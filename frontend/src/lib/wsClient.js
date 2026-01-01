@@ -1,4 +1,6 @@
-const WS_URL = 'ws://127.0.0.1:8000/ws/state';
+// src/lib/ws/wsClient.js
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000';
+const WS_URL = API_BASE.replace('http', 'ws') + '/ws/state';
 
 export const ConnectionState = {
     CONNECTED: 'CONNECTED',
@@ -16,7 +18,6 @@ class WSClient {
     }
 
     connect() {
-        // ✅ OPEN 뿐 아니라 CONNECTING도 막아야 중복 연결 안 생김
         if (this.ws && (
             this.ws.readyState === WebSocket.OPEN ||
             this.ws.readyState === WebSocket.CONNECTING
@@ -28,26 +29,17 @@ class WSClient {
         this.ws = ws;
 
         ws.onopen = () => {
-            // 혹시 레이스로 다른 ws가 생겼으면 무시
             if (this.ws !== ws) return;
-
             this.setState(ConnectionState.CONNECTED);
 
             this.pingTimer = setInterval(() => {
-                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.send('ping');
-                }
+                if (this.ws?.readyState === WebSocket.OPEN) this.ws.send('ping');
             }, 8000);
         };
 
         ws.onmessage = (event) => {
             if (this.ws !== ws) return;
-            try {
-                const data = JSON.parse(event.data);
-                this.onMessage?.(data);
-            } catch (e) {
-                console.error('WS parse failed:', e);
-            }
+            try { this.onMessage?.(JSON.parse(event.data)); } catch { }
         };
 
         ws.onclose = () => {
@@ -64,11 +56,9 @@ class WSClient {
     }
 
     cleanup() {
-        if (this.pingTimer) {
-            clearInterval(this.pingTimer);
-            this.pingTimer = null;
-        }
-        // 핸들러 정리(메모리/중복 호출 방지)
+        if (this.pingTimer) clearInterval(this.pingTimer);
+        this.pingTimer = null;
+
         if (this.ws) {
             this.ws.onopen = null;
             this.ws.onclose = null;
@@ -79,20 +69,15 @@ class WSClient {
     }
 
     disconnect() {
-        // ✅ close 먼저 하고 cleanup
         const ws = this.ws;
         this.cleanup();
-        try { ws?.close(1000, 'client disconnect'); } catch {}
+        try { ws?.close(1000, 'client disconnect'); } catch { }
         this.setState(ConnectionState.DISCONNECTED);
     }
 
     setState(state) {
         this.state = state;
         this.onStateChange?.(state);
-    }
-
-    getState() {
-        return this.state;
     }
 }
 
