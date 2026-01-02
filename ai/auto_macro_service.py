@@ -32,7 +32,7 @@ async def run_auto_macro():
 
     print("-" * 50)
     print(f"🎤 마이크 인덱스: {ears.device_index} (설정: {config['settings'].get('device_index')})")
-    print(f"🧠 AI 모델: {bot.model.model_name if bot.model else 'None'}")
+    print(f"🧠 AI 모델: LGAI-EXAONE/EXAONE-4.0-1.2B (Local)")
     print("💡 Enter: 전송 / Right Shift: 취소")
     print("-" * 50)
 

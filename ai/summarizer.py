@@ -1,5 +1,5 @@
 import os
-import google.generativeai as genai
+
 from dotenv import load_dotenv
 
 # .env 파일 로드
@@ -9,13 +9,10 @@ load_dotenv(dotenv_path=dotenv_path, override=True)
 
 class MeetingSummarizer:
     def __init__(self):
-        self.api_key = os.getenv("GEMINI_API_KEY")
-        if self.api_key:
-            genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel('gemini-2.0-flash')
-        else:
-            self.model = None
-            print("⚠️ [Summarizer] GEMINI_API_KEY를 찾을 수 없습니다.")
+        # EXAONE 모델 로드
+        from exaone_loader import ExaoneLoader
+        self.loader = ExaoneLoader()
+        self.model = self.loader._model
 
         self.last_summary = "아직 요약된 내용이 없습니다."
 
@@ -43,10 +40,10 @@ class MeetingSummarizer:
         """
 
         try:
-            response = self.model.generate_content(prompt)
-            summary = response.text.strip()
-            self.last_summary = summary
-            return summary
+            # EXAONE Loader 사용
+            summary = self.loader.generate_content(prompt)
+            self.last_summary = summary.strip()
+            return self.last_summary
         except Exception as e:
-            print(f"❌ Gemini 요약 에러: {e}")
+            print(f"❌ EXAONE 요약 에러: {e}")
             return self.last_summary
