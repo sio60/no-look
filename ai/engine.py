@@ -18,7 +18,8 @@ from scene_transition import TransitionManager
 class NoLookEngine:
     """
     - 웹캠 점유(OpenCV)
-    - warmup_seconds 동안은 "녹화만" 하고 추적 OFF
+    - ✅ "첫 접속" 시점에 warmup 녹화 시작 (30초)
+    - warmup 동안은 "녹화만" 하고 추적 OFF
     - 이후 디텍터 ON
     - REAL에서는 rolling_seconds 만큼 롤링 저장
     - FAKE로 전환되면 롤링 버퍼를 재생(딜레이 영상)
@@ -31,10 +32,10 @@ class NoLookEngine:
         transition_time: float = 0.5,
         fps_limit: Optional[float] = None,
 
-        # ✅ 빠른 테스트 세팅
-        warmup_seconds: int = 5,          # ✅ 5초
-        rolling_seconds: int = 10,        # ✅ 10초 버퍼
-        rolling_segment_seconds: int = 2, # ✅ 2초 단위로 자름
+        # ✅ 요구사항: 처음 접속 시 30초 녹화
+        warmup_seconds: int = 30,
+        rolling_seconds: int = 10,
+        rolling_segment_seconds: int = 2,
     ):
         self.webcam_id = webcam_id
         self.transition_time = float(transition_time)
@@ -72,14 +73,20 @@ class NoLookEngine:
         self.force_real = False
 
         self.last_fake_frame = None
+        self.transition_effect = "blackout"
 
-        self.transition_effect = "blackout" # Default effect
+        # ✅ 핵심: 세션 시작(=첫 접속) 전에는 warmup도, 추적도 안 함
+        self.session_active = False
 
-        self._warmup_start = time.time()
-        self._warmup_end = self._warmup_start + self.warmup_seconds
-        self._warming_up = True
+        self._warmup_start = 0.0
+        self._warmup_end = 0.0
+        self._warming_up = False
+
+        # ✅ reset_lock 직후 바로 다시 락 걸리는 거 방지 (2초 쿨다운)
+        self._cooldown_until = 0.0
 
         self._state: Dict[str, Any] = {
+            "sessionActive": False,
             "mode": "REAL",
             "ratio": 0.0,
             "lockedFake": False,
@@ -89,10 +96,42 @@ class NoLookEngine:
             "timestamp": time.time(),
             "reaction": None,
             "notice": None,
-            "warmingUp": True,
+            "warmingUp": False,
             "warmupTotalSec": self.warmup_seconds,
-            "warmupRemainingSec": self.warmup_seconds,
+            "warmupRemainingSec": 0,
+            "transitionEffect": self.transition_effect,
         }
+
+    # ---------- session ----------
+    def start_session_if_needed(self) -> None:
+        """✅ 첫 접속 시 warmup을 시작한다."""
+        with self._lock:
+            if self.session_active:
+                return
+
+            self.session_active = True
+            self.locked_fake = False
+            self.mode = "REAL"
+            self.trans_start = time.time()
+
+            now = time.time()
+            self._warmup_start = now
+            self._warmup_end = now + self.warmup_seconds
+            self._warming_up = True
+
+            self._state = {
+                **self._state,
+                "sessionActive": True,
+                "mode": "REAL",
+                "ratio": 0.0,
+                "lockedFake": False,
+                "reasons": ["WARMUP_RECORDING"],
+                "timestamp": now,
+                "notice": None,
+                "warmingUp": True,
+                "warmupTotalSec": self.warmup_seconds,
+                "warmupRemainingSec": self.warmup_seconds,
+            }
 
     # ---------- controls ----------
     def set_pause_fake(self, value: bool) -> None:
@@ -102,20 +141,22 @@ class NoLookEngine:
     def set_force_real(self, value: bool) -> None:
         with self._lock:
             self.force_real = bool(value)
-
-    def set_transition_effect(self, effect_name: str) -> None:
-        with self._lock:
-            self.transition_effect = effect_name
+            # 강제 REAL이면 즉시 REAL로
             if self.force_real and self.mode != "REAL":
                 self.mode = "REAL"
                 self.trans_start = time.time()
 
+    def set_transition_effect(self, effect_name: str) -> None:
+        with self._lock:
+            self.transition_effect = effect_name
+
     def reset_lock(self) -> None:
         with self._lock:
             self.locked_fake = False
-            if self.mode != "REAL":
-                self.mode = "REAL"
-                self.trans_start = time.time()
+            self.mode = "REAL"
+            self.trans_start = time.time()
+            # ✅ reset 누른 직후 2초는 탐지 무시 (다시 바로 락 걸리는 체감 방지)
+            self._cooldown_until = time.time() + 2.0
 
     def get_state(self) -> Dict[str, Any]:
         with self._lock:
@@ -192,23 +233,61 @@ class NoLookEngine:
 
             now = time.time()
 
-            # ✅ warmup: 추적 OFF + 롤링 저장만
-            notice = None
-            if self._warming_up:
-                remaining = max(0, int(self._warmup_end - now))
-
-                self.rolling.set_recording_enabled(True)
-                self.rolling.update(real_frame, now)
-
-                if now >= self._warmup_end:
-                    self._warming_up = False
-                    notice = "✅ 5초 녹화 완료! 이제 추적 시작합니다."
+            # ✅ 세션 시작 전(=첫 접속 전)에는 그냥 REAL 출력만
+            if not self.session_active:
+                if self.rolling is not None:
+                    self.rolling.set_recording_enabled(False)
 
                 if self.bridge is not None:
                     self.bridge.send(real_frame)
 
                 with self._lock:
                     self._state = {
+                        **self._state,
+                        "sessionActive": False,
+                        "mode": "REAL",
+                        "ratio": 0.0,
+                        "lockedFake": bool(self.locked_fake),
+                        "pauseFake": bool(self.pause_fake_playback),
+                        "forceReal": bool(self.force_real),
+                        "reasons": ["WAITING_FIRST_CONNECT"],
+                        "timestamp": now,
+                        "notice": None,
+                        "warmingUp": False,
+                        "warmupTotalSec": self.warmup_seconds,
+                        "warmupRemainingSec": 0,
+                        "transitionEffect": self.transition_effect,
+                    }
+
+                # fps limit
+                if self.fps_limit:
+                    dt = time.time() - last_frame_time
+                    target_dt = 1.0 / float(self.fps_limit)
+                    if dt < target_dt:
+                        time.sleep(target_dt - dt)
+                    last_frame_time = time.time()
+                continue
+
+            # ✅ warmup: 추적 OFF + 롤링 저장만
+            notice = None
+            if self._warming_up:
+                remaining = max(0, int(self._warmup_end - now))
+
+                if self.rolling is not None:
+                    self.rolling.set_recording_enabled(True)
+                    self.rolling.update(real_frame, now)
+
+                if now >= self._warmup_end:
+                    self._warming_up = False
+                    notice = "✅ 녹화 완료! 이제 추적 시작합니다."
+
+                if self.bridge is not None:
+                    self.bridge.send(real_frame)
+
+                with self._lock:
+                    self._state = {
+                        **self._state,
+                        "sessionActive": True,
                         "mode": "REAL",
                         "ratio": 0.0,
                         "lockedFake": bool(self.locked_fake),
@@ -216,11 +295,11 @@ class NoLookEngine:
                         "forceReal": bool(self.force_real),
                         "reasons": ["WARMUP_RECORDING"],
                         "timestamp": now,
-                        "reaction": None,
                         "notice": notice,
                         "warmingUp": True,
                         "warmupTotalSec": self.warmup_seconds,
                         "warmupRemainingSec": remaining,
+                        "transitionEffect": self.transition_effect,
                     }
 
                 if self.fps_limit:
@@ -233,6 +312,11 @@ class NoLookEngine:
 
             # ✅ 추적 ON
             is_distracted, reasons = self.detector.is_distracted(real_frame)
+
+            # ✅ reset 직후 쿨다운
+            if now < self._cooldown_until:
+                is_distracted = False
+                reasons = ["COOLDOWN_AFTER_RESET"]
 
             with self._lock:
                 force_real = self.force_real
@@ -250,13 +334,7 @@ class NoLookEngine:
                     self.mode = target_mode
                     self.trans_start = time.time()
 
-                if mode_changed:
-                    self.mode = target_mode
-                    self.trans_start = time.time()
-
-                    # FAKE 전환 시 이펙트 시작
                     if self.mode == "FAKE":
-                        # 프론트엔드에서 설정한 이펙트값 사용
                         self.transition_manager.start(effect_name=self.transition_effect)
                         if self.rolling is not None:
                             self.rolling.start_playback()
@@ -300,9 +378,6 @@ class NoLookEngine:
 
                 output_frame = self.generator.blend_frames(real_frame, fake_frame, ratio)
 
-                # [Scene Transition Override]
-                # 이펙트가 진행 중이면, 계산된 output_frame 대신 이펙트 프레임을 전송
-                # 이 때, Fade-In 효과를 위해 fake_frame(target_frame)도 함께 전달
                 effect_frame = self.transition_manager.get_frame(real_frame, target_frame=fake_frame)
                 if effect_frame is not None:
                     output_frame = effect_frame
@@ -314,6 +389,8 @@ class NoLookEngine:
 
             with self._lock:
                 self._state = {
+                    **self._state,
+                    "sessionActive": True,
                     "mode": self.mode,
                     "ratio": float(ratio),
                     "lockedFake": bool(self.locked_fake),

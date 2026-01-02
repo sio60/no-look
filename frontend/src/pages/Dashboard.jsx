@@ -1,3 +1,4 @@
+// web/src/pages/Dashboard.jsx
 import { useEffect, useState, useCallback, useRef } from 'react';
 import VideoPreview from '../components/VideoPreview';
 import SttPanel from '../components/SttPanel';
@@ -18,9 +19,10 @@ export default function Dashboard() {
     const [forceReal, setForceRealState] = useState(false);
     const [reasons, setReasons] = useState([]);
 
-    // ✅ warmup UI
+    // ✅ session/warmup
+    const [sessionActive, setSessionActive] = useState(false);
     const [warmingUp, setWarmingUp] = useState(false);
-    const [warmupTotalSec, setWarmupTotalSec] = useState(120);      // ✅ 2분
+    const [warmupTotalSec, setWarmupTotalSec] = useState(30);
     const [warmupRemainingSec, setWarmupRemainingSec] = useState(0);
 
     const prevWarmingUpRef = useRef(false);
@@ -32,57 +34,40 @@ export default function Dashboard() {
         return `${m}:${r}`;
     };
 
+    const applyState = useCallback((s) => {
+        if (!s) return;
+
+        setMode(s.mode ?? 'REAL');
+        setRatio(s.ratio ?? 0);
+        setLockedFake(!!s.lockedFake);
+        setPauseFakeState(!!s.pauseFake);
+        setForceRealState(!!s.forceReal);
+        setReasons(s.reasons ?? []);
+
+        setSessionActive(!!s.sessionActive);
+        setWarmingUp(!!s.warmingUp);
+        setWarmupTotalSec(s.warmupTotalSec ?? 30);
+        setWarmupRemainingSec(s.warmupRemainingSec ?? 0);
+
+        if (s.reaction) addToast(`🤖 ${s.reaction}`, 'success');
+        if (s.notice) addToast(s.notice, 'success');
+
+        const prev = prevWarmingUpRef.current;
+        if (prev && !s.warmingUp) addToast('✅ 녹화 완료!', 'success');
+        prevWarmingUpRef.current = !!s.warmingUp;
+    }, [addToast]);
+
     useEffect(() => {
-        fetchEngineState()
-            .then((s) => {
-                setMode(s.mode ?? 'REAL');
-                setRatio(s.ratio ?? 0);
-                setLockedFake(!!s.lockedFake);
-                setPauseFakeState(!!s.pauseFake);
-                setForceRealState(!!s.forceReal);
-                setReasons(s.reasons ?? []);
+        fetchEngineState().then(applyState).catch(() => {});
 
-                setWarmingUp(!!s.warmingUp);
-                setWarmupTotalSec(s.warmupTotalSec ?? 120);
-                setWarmupRemainingSec(s.warmupRemainingSec ?? 0);
-            })
-            .catch(() => { });
-
-        wsClient.onMessage = (s) => {
-            if (!s) return;
-
-            setMode(s.mode ?? 'REAL');
-            setRatio(s.ratio ?? 0);
-            setLockedFake(!!s.lockedFake);
-            setPauseFakeState(!!s.pauseFake);
-            setForceRealState(!!s.forceReal);
-            setReasons(s.reasons ?? []);
-
-            setWarmingUp(!!s.warmingUp);
-            setWarmupTotalSec(s.warmupTotalSec ?? 120);
-            setWarmupRemainingSec(s.warmupRemainingSec ?? 0);
-
-            // 락 처음 걸릴 때 reaction 오면 토스트
-            if (s.reaction) addToast(`🤖 ${s.reaction}`, 'success');
-
-            // ✅ warmup 완료 공지(백엔드 notice)
-            if (s.notice) addToast(s.notice, 'success');
-
-            // ✅ 혹시 notice 못 받아도 "warmingUp true -> false"로 완료 토스트
-            const prev = prevWarmingUpRef.current;
-            if (prev && !s.warmingUp) {
-                addToast('✅ 녹화 완료!', 'success');
-            }
-            prevWarmingUpRef.current = !!s.warmingUp;
-        };
-
+        wsClient.onMessage = applyState;
         wsClient.connect();
 
         return () => {
             wsClient.disconnect();
             wsClient.onMessage = null;
         };
-    }, [addToast]);
+    }, [applyState]);
 
     const togglePauseFake = useCallback(async () => {
         const next = !pauseFake;
@@ -101,19 +86,26 @@ export default function Dashboard() {
         if (res.ok) addToast('락 초기화 완료', 'success');
     }, [addToast]);
 
-    const progress = warmupTotalSec > 0 ? (warmupTotalSec - warmupRemainingSec) / warmupTotalSec : 0;
+    const progress = warmupTotalSec > 0
+        ? (warmupTotalSec - warmupRemainingSec) / warmupTotalSec
+        : 0;
+
+    const showWarmup = warmingUp || (sessionActive && warmupRemainingSec > 0);
 
     return (
         <div className="dashboard simple">
             {/* ✅ Warmup Overlay */}
-            {warmingUp && (
+            {showWarmup && (
                 <div className="warmup-overlay">
                     <div className="warmup-card">
                         <div className="warmup-title">녹화 중입니다</div>
                         <div className="warmup-desc">{warmupTotalSec}초 동안 가만히 있어주세요</div>
                         <div className="warmup-timer">{mmss(warmupRemainingSec)}</div>
                         <div className="warmup-bar">
-                            <div className="warmup-bar-fill" style={{ width: `${Math.min(100, Math.max(0, progress * 100))}%` }} />
+                            <div
+                                className="warmup-bar-fill"
+                                style={{ width: `${Math.min(100, Math.max(0, progress * 100))}%` }}
+                            />
                         </div>
                         <div className="warmup-sub">녹화가 끝나면 자동으로 추적을 시작해요.</div>
                     </div>
@@ -141,16 +133,16 @@ export default function Dashboard() {
                     </div>
 
                     <div className="mode-display">
-                        <span className={`mode-indicator ${mode.toLowerCase()}`}>
-                            현재: <strong>{mode}</strong> ({Math.round(ratio * 100)}%)
-                        </span>
+            <span className={`mode-indicator ${mode.toLowerCase()}`}>
+              현재: <strong>{mode}</strong> ({Math.round(ratio * 100)}%)
+            </span>
                         <span style={{ marginLeft: 12 }}>
-                            Locked: <strong>{String(lockedFake)}</strong>
-                        </span>
+              Locked: <strong>{String(lockedFake)}</strong>
+            </span>
                         {!!reasons?.length && (
                             <span style={{ marginLeft: 12 }}>
-                                Reasons: <strong>{reasons.join(', ')}</strong>
-                            </span>
+                Reasons: <strong>{reasons.join(', ')}</strong>
+              </span>
                         )}
                     </div>
                 </div>
@@ -165,6 +157,6 @@ export default function Dashboard() {
             </div>
 
             <Toast toasts={toasts} onRemove={removeToast} />
-        </div >
+        </div>
     );
 }
