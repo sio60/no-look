@@ -29,6 +29,7 @@ export default function TransitionSelector({ addToast }) {
                 >
                     <option value="blackout">Blackout (암전 to 페이드인)</option>
                     <option value="falling">Falling (떨어짐 효과)</option>
+                    <option value="natural_lag">Natural Lag (자연스러운 랙/멈춤)</option>
                 </select>
                 <button className="btn btn-primary btn-apply" onClick={handleApply}>
                     적용

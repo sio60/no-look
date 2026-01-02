@@ -52,6 +52,8 @@ class TransitionManager:
             return self._get_frame_falling(real_frame, elapsed)
         elif self.current_effect == "blackout":
             return self._get_frame_blackout(real_frame, elapsed, target_frame)
+        elif self.current_effect == "natural_lag":
+            return self._get_frame_natural_lag(real_frame, elapsed)
         
         return self._get_frame_falling(real_frame, elapsed) # Default
 
@@ -171,6 +173,26 @@ class TransitionManager:
         #     return self._apply_zoom_out(frame, progress)
         
         return self._apply_motion_blur_falling(frame, progress) # Default
+
+    def _get_frame_natural_lag(self, real_frame, elapsed):
+        """
+        [Effect: natural_lag]
+        약 1초간 마지막 장면에서 멈춰있다가(Fake Lag) 자연스럽게 Fake 영상으로 넘어감.
+        """
+        LAG_DURATION = 1.0
+        
+        if elapsed < LAG_DURATION:
+            # 1. Capture & Freeze
+            if self.last_effect_frame is None and real_frame is not None:
+                self.last_effect_frame = real_frame.copy()
+            
+            if self.last_effect_frame is not None:
+                return self.last_effect_frame
+            return real_frame
+        else:
+            # 2. End (Return to Fake)
+            self.active = False
+            return None
 
     def _apply_motion_blur_falling(self, frame, progress):
         """
