@@ -1,9 +1,14 @@
-// Dynamically compute WebSocket URL based on current page origin
-// Works for both production (Electron) and development (with Vite proxy)
+// src/lib/wsClient.js
+
 const getWsUrl = () => {
+    // DEV: FastAPI(8000)로 직접 연결 (Vite proxy 필요 없음)
+    if (import.meta.env.DEV) return 'ws://127.0.0.1:8000/ws/state';
+
+    // PROD: same-origin
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${protocol}//${window.location.host}/ws/state`;
 };
+
 const WS_URL = getWsUrl();
 
 export const ConnectionState = {
@@ -22,7 +27,6 @@ class WSClient {
     }
 
     connect() {
-        // ✅ OPEN 뿐 아니라 CONNECTING도 막아야 중복 연결 안 생김
         if (this.ws && (
             this.ws.readyState === WebSocket.OPEN ||
             this.ws.readyState === WebSocket.CONNECTING
@@ -34,7 +38,6 @@ class WSClient {
         this.ws = ws;
 
         ws.onopen = () => {
-            // 혹시 레이스로 다른 ws가 생겼으면 무시
             if (this.ws !== ws) return;
 
             this.setState(ConnectionState.CONNECTED);
@@ -74,7 +77,6 @@ class WSClient {
             clearInterval(this.pingTimer);
             this.pingTimer = null;
         }
-        // 핸들러 정리(메모리/중복 호출 방지)
         if (this.ws) {
             this.ws.onopen = null;
             this.ws.onclose = null;
@@ -85,7 +87,6 @@ class WSClient {
     }
 
     disconnect() {
-        // ✅ close 먼저 하고 cleanup
         const ws = this.ws;
         this.cleanup();
         try { ws?.close(1000, 'client disconnect'); } catch { }

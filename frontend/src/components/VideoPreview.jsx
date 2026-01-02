@@ -1,5 +1,4 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-
 export default function VideoPreview({ mode, ratio, addToast }) {
     const realVideoRef = useRef(null);
     const fakeCanvasRef = useRef(null);
