@@ -415,3 +415,6 @@ ai/tts_out/**
 *.mkv
 *.avi
 *.mov
+# --- allow frontend src/lib ---
+!frontend/src/lib/
+!frontend/src/lib/**

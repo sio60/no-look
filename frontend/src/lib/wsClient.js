@@ -1,4 +1,10 @@
-const WS_URL = 'ws://127.0.0.1:8000/ws/state';
+// Dynamically compute WebSocket URL based on current page origin
+// Works for both production (Electron) and development (with Vite proxy)
+const getWsUrl = () => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}/ws/state`;
+};
+const WS_URL = getWsUrl();
 
 export const ConnectionState = {
     CONNECTED: 'CONNECTED',
@@ -75,7 +81,6 @@ class WSClient {
             this.ws.onerror = null;
             this.ws.onmessage = null;
         }
-
         this.ws = null;
     }
 
@@ -83,7 +88,7 @@ class WSClient {
         // ✅ close 먼저 하고 cleanup
         const ws = this.ws;
         this.cleanup();
-        try { ws?.close(1000, 'client disconnect'); } catch {}
+        try { ws?.close(1000, 'client disconnect'); } catch { }
         this.setState(ConnectionState.DISCONNECTED);
     }
 

@@ -1,4 +1,6 @@
-const API_BASE_URL = 'http://127.0.0.1:8000';
+// Production: served from same origin via FastAPI
+// Development: proxied via vite.config.js
+const API_BASE_URL = '/api';
 
 export async function setPauseFake(value) {
     const res = await fetch(`${API_BASE_URL}/control/pause_fake`, {
@@ -17,7 +19,6 @@ export async function setForceReal(value) {
     });
     return res.json();
 }
-
 
 export async function resetLock() {
     const res = await fetch(`${API_BASE_URL}/control/reset_lock`, { method: 'POST' });

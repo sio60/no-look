@@ -13,6 +13,7 @@ Vite + React 기반의 실시간 회의 보조 대시보드 프론트엔드입�
 ```bash
 cd frontend
 npm install
+npm i @mediapipe/tasks-vision
 ```
 
 ## 실행
