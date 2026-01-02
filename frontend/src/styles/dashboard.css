@@ -972,6 +972,25 @@ body {
   box-shadow: var(--shadow);
 }
 
+/* ======== Dashboard Header ======== */
+.dashboard-header {
+  display: flex;
+  justify-content: center;
+  padding: 20px 0 10px;
+}
+
+.header-logo {
+  width: 180px;
+  height: auto;
+  filter: drop-shadow(0 4px 20px rgba(79, 140, 255, 0.25));
+  transition: transform 0.3s ease, filter 0.3s ease;
+}
+
+.header-logo:hover {
+  transform: scale(1.03);
+  filter: drop-shadow(0 6px 30px rgba(79, 140, 255, 0.4));
+}
+
 /* ======== Warmup Overlay (Countdown) ======== */
 .warmup-overlay {
   position: fixed;
@@ -1006,6 +1025,13 @@ body {
   50% {
     box-shadow: 0 25px 80px rgba(0, 0, 0, 0.6), 0 0 80px rgba(79, 140, 255, 0.25);
   }
+}
+
+.warmup-logo {
+  width: 120px;
+  height: auto;
+  margin-bottom: 20px;
+  filter: drop-shadow(0 4px 20px rgba(79, 140, 255, 0.3));
 }
 
 .warmup-title {

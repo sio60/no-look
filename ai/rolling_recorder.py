@@ -111,7 +111,6 @@ class RollingRecorder:
         self._play_paths: List[str] = []
         self._play_index: int = 0
         self._play_cap: Optional[cv2.VideoCapture] = None
-        self._last_played_frame = None  # ✅ 끊김 방지용 마지막 프레임 캐시
 
         self.recording_enabled: bool = True
 
@@ -209,42 +208,27 @@ class RollingRecorder:
         self._play_cap = cap
 
     def read_playback_frame(self):
-        """✅ 끊김 없는 재생: 세그먼트 전환 시에도 항상 프레임 반환"""
-        # 최대 시도 횟수 (무한 루프 방지)
-        max_attempts = len(self._play_paths) + 1 if self._play_paths else 1
-        
-        for _ in range(max_attempts):
-            if self._play_cap is None:
-                # 캡처가 없으면 다음 세그먼트 열기 시도
-                if not self._play_paths:
-                    return self._last_played_frame
-                self._open_play_cap()
-                if self._play_cap is None:
-                    return self._last_played_frame
+        if self._play_cap is None:
+            return None
 
-            ret, frame = self._play_cap.read()
-            if ret:
-                if frame.shape[1] != self.w or frame.shape[0] != self.h:
-                    frame = cv2.resize(frame, (self.w, self.h))
-                self._last_played_frame = frame  # ✅ 캐시 업데이트
-                return frame
+        ret, frame = self._play_cap.read()
+        if ret:
+            if frame.shape[1] != self.w or frame.shape[0] != self.h:
+                frame = cv2.resize(frame, (self.w, self.h))
+            return frame
 
-            # 현재 세그먼트 끝 → 다음 세그먼트로 즉시 전환
-            try:
-                self._play_cap.release()
-            except Exception:
-                pass
-            self._play_cap = None
+        try:
+            self._play_cap.release()
+        except Exception:
+            pass
+        self._play_cap = None
 
-            self._play_index += 1
-            if self._play_index >= len(self._play_paths):
-                self._play_index = 0  # 루프 재생
+        self._play_index += 1
+        if self._play_index >= len(self._play_paths):
+            self._play_index = 0
 
-            # ✅ 바로 다음 세그먼트 열고 루프 계속 (즉시 프레임 읽기)
-            self._open_play_cap()
-
-        # 모든 시도 실패 시 마지막 캐시 프레임 반환 (최후의 안전망)
-        return self._last_played_frame
+        self._open_play_cap()
+        return None
 
     def stop_playback(self) -> None:
         if self._play_cap is not None:

@@ -9,6 +9,8 @@ import '../styles/dashboard.css';
 import { wsClient } from '../lib/wsClient';
 import { setPauseFake, setForceReal, resetLock, fetchEngineState } from '../lib/api';
 
+import logoImg from '../assets/logo.png';
+
 export default function Dashboard() {
     const { toasts, addToast, removeToast } = useToast();
 
@@ -58,7 +60,7 @@ export default function Dashboard() {
     }, [addToast]);
 
     useEffect(() => {
-        fetchEngineState().then(applyState).catch(() => {});
+        fetchEngineState().then(applyState).catch(() => { });
 
         wsClient.onMessage = applyState;
         wsClient.connect();
@@ -98,6 +100,7 @@ export default function Dashboard() {
             {showWarmup && (
                 <div className="warmup-overlay">
                     <div className="warmup-card">
+                        <img src={logoImg} alt="No-Look Logo" className="warmup-logo" />
                         <div className="warmup-title">녹화 중입니다</div>
                         <div className="warmup-desc">{warmupTotalSec}초 동안 가만히 있어주세요</div>
                         <div className="warmup-timer">{mmss(warmupRemainingSec)}</div>
@@ -111,6 +114,11 @@ export default function Dashboard() {
                     </div>
                 </div>
             )}
+
+            {/* ✅ 헤더 로고 */}
+            <header className="dashboard-header">
+                <img src={logoImg} alt="No-Look Logo" className="header-logo" />
+            </header>
 
             <div className="simple-layout">
                 <div className="video-section">
@@ -133,16 +141,16 @@ export default function Dashboard() {
                     </div>
 
                     <div className="mode-display">
-            <span className={`mode-indicator ${mode.toLowerCase()}`}>
-              현재: <strong>{mode}</strong> ({Math.round(ratio * 100)}%)
-            </span>
+                        <span className={`mode-indicator ${mode.toLowerCase()}`}>
+                            현재: <strong>{mode}</strong> ({Math.round(ratio * 100)}%)
+                        </span>
                         <span style={{ marginLeft: 12 }}>
-              Locked: <strong>{String(lockedFake)}</strong>
-            </span>
+                            Locked: <strong>{String(lockedFake)}</strong>
+                        </span>
                         {!!reasons?.length && (
                             <span style={{ marginLeft: 12 }}>
-                Reasons: <strong>{reasons.join(', ')}</strong>
-              </span>
+                                Reasons: <strong>{reasons.join(', ')}</strong>
+                            </span>
                         )}
                     </div>
                 </div>
