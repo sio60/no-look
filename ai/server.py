@@ -27,13 +27,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ warmup 3분(180초) / rolling 3분(180초)
+# ✅ warmup 1분(60초) / rolling 1분(60초)
 engine = NoLookEngine(
     webcam_id=0,
     transition_time=0.5,
     fps_limit=30.0,
-    warmup_seconds=180,
-    rolling_seconds=180,
+    warmup_seconds=60,
+    rolling_seconds=60,
     rolling_segment_seconds=2,
 )
 
