@@ -40,13 +40,20 @@ class GhostEars:
         print(f"--- 🎧 [GhostEars] 모델 로딩 중... ({model_size}) ---")
         print(f"📌 트리거 키워드: {self.trigger_keywords}")
 
+        # ✅ WhisperModel 로딩: GPU(cuda) 우선 → 실패 시 CPU(int8) fallback
         self.model = None
         try:
-            # ✅ GPU/cuDNN 없는 환경에서 오류 방지를 위해 CPU 명시 사용
-            self.model = WhisperModel(model_size, device="cpu", compute_type="int8")
-            print("✅ 모델 로딩 완료!")
+            # RTX 4050이면 여기로 붙는 게 정상 (CUDA가 제대로 설치/연동돼 있다면)
+            self.model = WhisperModel(model_size, device="cuda", compute_type="float16")
+            print("✅ 모델 로딩 완료! (GPU: cuda, float16)")
         except Exception as e:
-            print(f"❌ 모델 로딩 실패: {e}")
+            print(f"⚠️ GPU 로딩 실패 → CPU로 fallback: {e}")
+            try:
+                self.model = WhisperModel(model_size, device="cpu", compute_type="int8")
+                print("✅ 모델 로딩 완료! (CPU: int8)")
+            except Exception as e2:
+                print(f"❌ 모델 로딩 실패: {e2}")
+                self.model = None
 
         self.recognizer = sr.Recognizer()
         self.recognizer.energy_threshold = 100
@@ -65,7 +72,9 @@ class GhostEars:
         self.full_history = []
 
         with open(self.transcript_file, "a", encoding="utf-8") as f:
-            f.write(f"\n\n--- 🚀 [No-Look] 세션 시작: {time.strftime('%Y-%m-%d %H:%M:%S')} ({model_size}) ---\n")
+            f.write(
+                f"\n\n--- 🚀 [No-Look] 세션 시작: {time.strftime('%Y-%m-%d %H:%M:%S')} ({model_size}) ---\n"
+            )
 
     def _apply_config(self, config):
         settings = config.get("settings", {})
@@ -86,8 +95,6 @@ class GhostEars:
         return True
 
     def _audio_callback(self, recognizer, audio):
-        # 너무 많이 찍히면 콘솔 도배됨. 필요하면 주석 처리.
-        # print(f"🎤 [Audio] signal (bytes={len(audio.get_raw_data())})")
         self.audio_queue.put(audio)
 
     def start_listening(self):
@@ -190,26 +197,43 @@ class GhostEars:
         return "\n".join(self.full_history)
 
     def check_trigger(self, text):
+        """
+        ✅ 키워드가 있을 때만 트리거 발동
+        - 키워드 없으면: 무조건 None
+        - 키워드 있으면: (question_patterns 있으면 QUESTION 우선) 없으면 KEYWORD
+        """
         if not text:
             return None
 
-        # 1) 질문 패턴
+        raw_text = text.strip()
+
+        # 1) 키워드 먼저 탐지 (게이트)
+        clean_text = re.sub(r"[^a-zA-Z0-9가-힣]", "", raw_text)
+
+        matched_keyword = None
+        for keyword in self.trigger_keywords:
+            clean_kw = re.sub(r"[^a-zA-Z0-9가-힣]", "", str(keyword))
+            if not clean_kw:
+                continue
+            if clean_kw in clean_text:
+                matched_keyword = keyword
+                break
+
+        # ✅ 키워드 없으면 절대 트리거 안 함
+        if not matched_keyword:
+            return None
+
+        # 2) 키워드가 있을 때만 질문 패턴 체크
         for pattern in self.question_patterns:
-            if pattern in text:
+            if not pattern:
+                continue
+            if str(pattern) in raw_text:
                 return ("QUESTION", pattern)
             try:
-                if re.search(pattern, text, re.IGNORECASE):
+                if re.search(str(pattern), raw_text, re.IGNORECASE):
                     return ("QUESTION", pattern)
             except Exception:
                 continue
 
-        # 2) 키워드
-        clean_text = re.sub(r"[^a-zA-Z0-9가-힣]", "", text)
-        for keyword in self.trigger_keywords:
-            clean_kw = re.sub(r"[^a-zA-Z0-9가-힣]", "", keyword)
-            if not clean_kw:
-                continue
-            if clean_kw in clean_text:
-                return ("KEYWORD", keyword)
-
-        return None
+        # 3) 질문 패턴 없으면 키워드 트리거
+        return ("KEYWORD", matched_keyword)
