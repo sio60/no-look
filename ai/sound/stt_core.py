@@ -42,8 +42,14 @@ class GhostEars:
 
         self.model = None
         try:
-            # ✅ GPU/cuDNN 없는 환경에서 오류 방지를 위해 CPU 명시 사용
-            self.model = WhisperModel(model_size, device="cpu", compute_type="int8")
+            # ✅ [Performance Fix] GPU(cuda) 우선 사용, 없으면 CPU
+            try:
+                self.model = WhisperModel(model_size, device="cuda", compute_type="float16")
+                print("✅ [GhostEars] GPU(CUDA) 가속 활성화됨!")
+            except Exception as e_cuda:
+                print(f"⚠️ [GhostEars] GPU 로딩 실패({e_cuda}), CPU로 전환합니다...")
+                self.model = WhisperModel(model_size, device="cpu", compute_type="int8")
+            
             print("✅ 모델 로딩 완료!")
         except Exception as e:
             print(f"❌ 모델 로딩 실패: {e}")
@@ -71,7 +77,7 @@ class GhostEars:
         settings = config.get("settings", {})
         triggers = config.get("triggers", {})
 
-        self.device_index = settings.get("device_index", 0)
+        self.device_index = settings.get("device_index", 5)
         self.language = settings.get("language", "ko")
         self.sample_rate = settings.get("sample_rate", 16000)
 
