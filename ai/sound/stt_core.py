@@ -45,7 +45,7 @@ class GhostEars:
         # WhisperModel 로딩: GPU(cuda) 우선 → 실패 시 CPU(int8) fallback
         self.model = None
         try:
-            # GPU 로딩 (CUDA가 제대로 설치/연동돼 있다면)
+            # RTX 4050이면 여기로 붙는 게 정상 (CUDA가 제대로 설치/연동돼 있다면)
             self.model = WhisperModel(model_size, device="cuda", compute_type="float16")
             print("✅ 모델 로딩 완료! (GPU: cuda, float16)")
         except Exception as e:
